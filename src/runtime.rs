@@ -282,6 +282,8 @@ where
                                             _ => None,
                                         })
                                     });
+                                let reply_channel_for_progress =
+                                    ticket.channels.first().cloned();
                                 Some((
                                     priority,
                                     ticket.short_name.clone(),
@@ -292,6 +294,7 @@ where
                                     format!("http://{}", cfg.http_addr),
                                     cfg.feishu.clone(),
                                     reaction_msg_id,
+                                    reply_channel_for_progress,
                                 ))
                             } else {
                                 None
@@ -311,6 +314,7 @@ where
                         api_url,
                         feishu_cfg_for_reaction,
                         reaction_msg_id,
+                        reply_channel_for_progress,
                     )) = launch_prep
                     else {
                         continue;
@@ -331,12 +335,56 @@ where
                             .clone()
                             .filter(|s| !s.trim().is_empty()),
                     ) {
-                        let adapter = FeishuAdapter::new(feishu_cfg_for_reaction);
+                        let adapter = FeishuAdapter::new(feishu_cfg_for_reaction.clone());
                         let _ = adapter.add_reaction(msg_id, &emoji).await;
                     }
 
                     let wt_path = Path::new(&assign.worktree_dir);
                     let _ = prepare_worktree(repo_checkout.as_deref(), wt_path, &short_name).await;
+
+                    let (progress_tx, mut progress_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<String>();
+                    let progress_engine = Arc::clone(&self.engine);
+                    let progress_store = Arc::clone(&self.store);
+                    let progress_ticket_id = ticket_id.clone();
+                    let progress_feishu_cfg = feishu_cfg_for_reaction;
+                    let progress_channel = reply_channel_for_progress;
+
+                    let progress_forwarder = tokio::spawn(async move {
+                        let adapter = FeishuAdapter::new(progress_feishu_cfg);
+                        while let Some(note) = progress_rx.recv().await {
+                            let ts = chrono::Utc::now().to_rfc3339();
+                            {
+                                let mut eng = progress_engine.lock().unwrap();
+                                let _ = eng.record_worker_report(
+                                    &progress_ticket_id,
+                                    crate::core::model::ReportStatus::Progress,
+                                    note.clone(),
+                                    None,
+                                    None,
+                                    None,
+                                    &ts,
+                                );
+                                let _ = progress_store.save_engine_state(&eng.state, &ts);
+                            }
+                            if let Some(ch) = &progress_channel
+                                && adapter.can_deliver(ch)
+                            {
+                                let msg = crate::core::model::OutboxMessage {
+                                    id: format!("prog-{}", chrono::Utc::now().timestamp_millis()),
+                                    ticket_id: Some(progress_ticket_id.clone()),
+                                    channel: ch.clone(),
+                                    purpose: crate::core::model::OutboxPurpose::Attention,
+                                    body: note,
+                                    status: crate::core::model::OutboxStatus::Pending,
+                                    attempts: 0,
+                                    last_error: None,
+                                    created_at: ts,
+                                };
+                                let _ = adapter.send_message(&msg).await;
+                            }
+                        }
+                    });
 
                     let ctx = WorkerLaunchContext {
                         ticket_id: ticket_id.clone(),
@@ -347,6 +395,7 @@ where
                         api_url,
                         prompt,
                         max_turns: 8,
+                        progress_tx: Some(progress_tx),
                     };
 
                     let exec_res = if assign.target.harness == HarnessKind::PiNative {
@@ -370,6 +419,9 @@ where
                     } else {
                         run_cli_harness_worker(&ctx).await
                     };
+
+                    drop(ctx);
+                    let _ = progress_forwarder.await;
 
                     self.slots.release(assignment_id);
 

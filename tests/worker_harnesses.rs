@@ -52,6 +52,7 @@ fn cli_harness_specs_map_think_effort_and_scrub_credentials() {
         api_url: "http://127.0.0.1:3082".to_owned(),
         prompt: "Fix bug".to_owned(),
         max_turns: 4,
+        progress_tx: None,
     };
 
     // 1. Claude Code maps Xhigh -> --effort max
@@ -174,6 +175,7 @@ async fn pi_native_downgrades_think_effort_after_edit_and_auto_backgrounds_slow_
         api_url: "http://127.0.0.1:3082".to_owned(),
         prompt: "Fix parser bug".to_owned(),
         max_turns: 4,
+        progress_tx: None,
     };
 
     let result = run_pi_native_worker(&llm, &ctx, std::time::Duration::from_millis(200))

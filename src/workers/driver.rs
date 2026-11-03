@@ -84,6 +84,8 @@ pub struct WorkerLaunchContext {
     pub api_url: String,
     pub prompt: String,
     pub max_turns: usize,
+    /// Optional real-time channel for streaming intermediate thinking / progress notes (`💭 ...`) to IM while working.
+    pub progress_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 /// Result returned when a Worker Assignment finishes a turn or exits.
@@ -493,6 +495,22 @@ pub async fn run_pi_native_worker<L: LlmClient>(
             break;
         }
 
+        // If the LLM emitted thinking text before invoking non-report tools, stream it as live progress!
+        let has_only_report = resp
+            .tool_calls
+            .iter()
+            .all(|tc| tc.name == "worker_report");
+        if !has_only_report
+            && !resp.content.trim().is_empty()
+            && let Some(tx) = &ctx.progress_tx
+        {
+            let note = crate::core::recall::truncate_to_im_word_limit(
+                &format!("💭 {}", resp.content.trim()),
+                85,
+            );
+            let _ = tx.send(note);
+        }
+
         messages.push(LlmMessage::assistant(
             resp.content.clone(),
             resp.tool_calls.clone(),
@@ -731,11 +749,78 @@ pub async fn run_cli_harness_worker(
             stdin.flush().await?;
         }
 
-    let output = child.wait_with_output().await?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout_pipe = child.stdout.take().unwrap();
+    let stderr_pipe = child.stderr.take().unwrap();
 
-    let status = if output.status.success() {
+    let stderr_handle = tokio::spawn(async move {
+        let mut err_buf = String::new();
+        let mut reader = BufReader::new(stderr_pipe).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            err_buf.push_str(&line);
+            err_buf.push('\n');
+        }
+        err_buf
+    });
+
+    let mut stdout_buf = String::new();
+    let mut reader = BufReader::new(stdout_pipe).lines();
+    let mut pending_agent_thought: Option<String> = None;
+    let mut sent_progress_count = 0usize;
+
+    while let Ok(Some(line)) = reader.next_line().await {
+        stdout_buf.push_str(&line);
+        stdout_buf.push('\n');
+
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+            let ev_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if ev_type == "item.completed" {
+                let item_type = val
+                    .pointer("/item/type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let item_text = val
+                    .pointer("/item/text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if item_type == "agent_message" && !item_text.is_empty() {
+                    pending_agent_thought = Some(item_text.to_owned());
+                } else if item_type == "reasoning"
+                    && !item_text.is_empty()
+                    && sent_progress_count < 3
+                    && let Some(tx) = &ctx.progress_tx
+                {
+                    let note = crate::core::recall::truncate_to_im_word_limit(
+                        &format!("💭 {item_text}"),
+                        85,
+                    );
+                    let _ = tx.send(note);
+                    sent_progress_count += 1;
+                }
+            } else if ev_type == "item.started" {
+                // An `agent_message` followed by `item.started` (e.g. `command_execution`) is an intermediate
+                // thinking update before running a tool—stream it immediately to Feishu!
+                if let Some(thought) = pending_agent_thought.take() {
+                    if sent_progress_count < 3
+                        && let Some(tx) = &ctx.progress_tx
+                    {
+                        let note = crate::core::recall::truncate_to_im_word_limit(
+                            &format!("💭 {thought}"),
+                            85,
+                        );
+                        let _ = tx.send(note);
+                        sent_progress_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let exit_status = child.wait().await?;
+    let stderr = stderr_handle.await.unwrap_or_default().trim().to_owned();
+    let stdout = stdout_buf.trim().to_owned();
+
+    let status = if exit_status.success() {
         ReportStatus::Ready
     } else {
         ReportStatus::Failed
