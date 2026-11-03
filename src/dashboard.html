@@ -581,13 +581,18 @@
             </div>
             <div class="form-group">
               <label>绑定 GitHub 仓库 (`github.repos`，逗号分隔)</label>
-              <input type="text" id="cfg-github-repos" />
+              <input type="text" id="cfg-github-repos" placeholder="xdlkc/nexus, xdlkc/clipboard-history" />
+            </div>
+            <div class="form-group">
+              <label>默认迭代仓库 (`default_repo`)</label>
+              <input type="text" id="cfg-default-repo" placeholder="xdlkc/nexus" />
             </div>
             <div class="form-group">
               <label>允许的飞书用户 Open ID 白名单 (`allowed_actors`，逗号分隔)</label>
               <input type="text" id="cfg-allowed-actors" />
             </div>
           </div>
+          <div id="cfg-bound-repos-info" style="font-size:0.8rem; color:var(--text-muted); margin-top:0.2rem"></div>
 
           <hr style="border:none; border-top:1px solid var(--border); margin:1.25rem 0" />
           <h3 style="font-size:0.95rem; margin-top:0">默认 Worker 执行引擎 (Default ExecutionTarget)</h3>
@@ -757,7 +762,7 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('memory-editor').addEventListener('input', () => { memoryDirty = true; });
-      ['cfg-bot-name','cfg-reply-in-thread','cfg-ack-reaction','cfg-wake-keywords','cfg-chat-ids','cfg-github-repos','cfg-allowed-actors','cfg-default-harness','cfg-default-provider','cfg-default-model','cfg-default-think','cfg-jev-mode','cfg-jev-base-url','cfg-jev-model','cfg-jev-api-key','cfg-router-provider','cfg-router-model','cfg-router-think'].forEach(id => {
+      ['cfg-bot-name','cfg-reply-in-thread','cfg-ack-reaction','cfg-wake-keywords','cfg-chat-ids','cfg-github-repos','cfg-default-repo','cfg-allowed-actors','cfg-default-harness','cfg-default-provider','cfg-default-model','cfg-default-think','cfg-jev-mode','cfg-jev-base-url','cfg-jev-model','cfg-jev-api-key','cfg-router-provider','cfg-router-model','cfg-router-think'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('input', () => { configDirty = true; });
       });
@@ -1059,7 +1064,11 @@
         document.getElementById('cfg-wake-keywords').value = (cfg.feishu.wake_keywords || []).join(', ');
         document.getElementById('cfg-chat-ids').value = (cfg.feishu.chat_ids || []).join(', ');
         document.getElementById('cfg-github-repos').value = (cfg.github && cfg.github.repos || []).join(', ');
+        document.getElementById('cfg-default-repo').value = cfg.default_repo || 'xdlkc/nexus';
         document.getElementById('cfg-allowed-actors').value = (cfg.allowed_actors || []).join(', ');
+        const reposMap = cfg.repositories || {};
+        const reposEntries = Object.entries(reposMap).filter(([k]) => k.includes('/')).map(([k, v]) => `<code>${escapeHtml(k)} → ${escapeHtml(v)}</code>`).join(' · ');
+        document.getElementById('cfg-bound-repos-info').innerHTML = reposEntries ? `已映射本地代码库目录: ${reposEntries}` : '';
         const firstRuleTarget = (cfg.proactive_rules && cfg.proactive_rules[0] && cfg.proactive_rules[0].default_target) || {};
         document.getElementById('cfg-default-harness').value = firstRuleTarget.harness || 'codex';
         document.getElementById('cfg-default-provider').value = firstRuleTarget.provider || 'openai';
@@ -1162,6 +1171,7 @@
         wake_keywords: splitCsv(document.getElementById('cfg-wake-keywords').value),
         chat_ids: splitCsv(document.getElementById('cfg-chat-ids').value),
         github_repos: splitCsv(document.getElementById('cfg-github-repos').value),
+        default_repo: document.getElementById('cfg-default-repo').value.trim() || 'xdlkc/nexus',
         allowed_actors: splitCsv(document.getElementById('cfg-allowed-actors').value),
         default_target: {
           harness: document.getElementById('cfg-default-harness').value,

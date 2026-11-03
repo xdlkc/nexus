@@ -21,6 +21,8 @@ pub struct NexusConfig {
     pub max_concurrent_workers: usize,
     pub feishu: FeishuAdapterConfig,
     pub github: GithubAdapterConfig,
+    #[serde(default)]
+    pub default_repo: Option<String>,
     pub repositories: BTreeMap<String, PathBuf>,
     pub allowed_actors: HashSet<String>,
     pub allowed_bots: HashSet<String>,
@@ -40,6 +42,7 @@ impl NexusConfig {
             max_concurrent_workers: 4,
             feishu: FeishuAdapterConfig::default(),
             github: GithubAdapterConfig::default(),
+            default_repo: Some("xdlkc/nexus".to_owned()),
             repositories: BTreeMap::new(),
             allowed_actors: HashSet::new(),
             allowed_bots: HashSet::from(["ci-bot".to_owned(), "github-actions[bot]".to_owned()]),
@@ -77,6 +80,29 @@ impl NexusConfig {
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(&path, json)?;
         Ok(path)
+    }
+
+    /// Synchronizes `self.repositories` local checkout paths from `self.github.repos`.
+    pub fn sync_local_repositories(&mut self) {
+        let cwd = std::env::current_dir().ok();
+        let parent_dir = cwd.as_ref().and_then(|d| d.parent().map(|p| p.to_path_buf()));
+        for r in &self.github.repos {
+            let short = r.rsplit('/').next().unwrap_or(r);
+            if let Some(base) = &parent_dir {
+                let candidate = base.join(short);
+                if candidate.exists() {
+                    self.repositories.insert(r.clone(), candidate.clone());
+                    self.repositories.insert(short.to_owned(), candidate);
+                    continue;
+                }
+            }
+            if let Some(cur) = &cwd
+                && cur.file_name().and_then(|n| n.to_str()) == Some(short)
+            {
+                self.repositories.insert(r.clone(), cur.clone());
+                self.repositories.insert(short.to_owned(), cur.clone());
+            }
+        }
     }
 
     /// Builds the Tier-0 `SourceAdmissionPolicy` from configured allowlists.

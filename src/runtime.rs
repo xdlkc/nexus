@@ -235,8 +235,25 @@ where
                     ..
                 } => {
                     let launch_prep = {
-                        let eng = self.engine.lock().unwrap();
+                        let mut eng = self.engine.lock().unwrap();
                         let cfg = self.config.lock().unwrap();
+                        if let Some(t_mut) = eng.state.tickets.get_mut(ticket_id)
+                            && t_mut.repo.is_none()
+                        {
+                            let title_lower = t_mut.title.to_lowercase();
+                            let matched = cfg
+                                .github
+                                .repos
+                                .iter()
+                                .find(|r| {
+                                    let short = r.rsplit('/').next().unwrap_or(r).to_lowercase();
+                                    !short.is_empty() && title_lower.contains(&short)
+                                })
+                                .cloned()
+                                .or_else(|| cfg.default_repo.clone())
+                                .or_else(|| cfg.github.repos.first().cloned());
+                            t_mut.repo = matched;
+                        }
                         if let Some(ticket) = eng.state.tickets.get(ticket_id) {
                             if let Some(assign) =
                                 ticket.assignments.iter().find(|a| &a.id == assignment_id)
@@ -252,6 +269,12 @@ where
                                     .repo
                                     .as_ref()
                                     .and_then(|r| cfg.repositories.get(r))
+                                    .or_else(|| {
+                                        cfg.default_repo
+                                            .as_ref()
+                                            .and_then(|r| cfg.repositories.get(r))
+                                    })
+                                    .or_else(|| cfg.repositories.get("xdlkc/nexus"))
                                     .or_else(|| cfg.repositories.values().next())
                                     .cloned();
                                 let reaction_msg_id = ticket

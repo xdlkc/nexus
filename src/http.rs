@@ -99,6 +99,7 @@ pub struct UpdateConfigPayload {
     pub wake_keywords: Option<Vec<String>>,
     pub chat_ids: Option<Vec<String>>,
     pub github_repos: Option<Vec<String>>,
+    pub default_repo: Option<String>,
     pub allowed_actors: Option<Vec<String>>,
     pub default_target: Option<ExecutionTarget>,
     pub jev_enabled: Option<bool>,
@@ -346,6 +347,14 @@ async fn handle_update_config(
     }
     if let Some(repos) = payload.github_repos {
         cfg.github.repos = repos;
+        cfg.sync_local_repositories();
+    }
+    if let Some(def_repo) = payload.default_repo {
+        cfg.default_repo = if def_repo.trim().is_empty() {
+            None
+        } else {
+            Some(def_repo.trim().to_owned())
+        };
     }
     if let Some(actors) = payload.allowed_actors {
         cfg.allowed_actors = actors.into_iter().collect();
