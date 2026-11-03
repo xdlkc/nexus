@@ -167,18 +167,12 @@ async fn handle_dashboard() -> Html<&'static str> {
 }
 
 async fn handle_get_overview(State(app): State<SharedAppState>) -> Json<serde_json::Value> {
-    let default_repo = app
-        .config
-        .lock()
-        .unwrap()
-        .default_repo
-        .clone()
-        .unwrap_or_else(|| "xdlkc/nexus".to_owned());
+    let cfg_snapshot = app.config.lock().unwrap().clone();
     let state_val = {
         let mut eng = app.engine.lock().unwrap();
         for t in eng.state.tickets.values_mut() {
             if t.repo.is_none() {
-                t.repo = Some(default_repo.clone());
+                t.repo = crate::runtime::infer_ticket_repo(t, &cfg_snapshot);
             }
             if let Some(last_asg) = t.assignments.last_mut()
                 && let Some(rep) = &mut last_asg.latest_report

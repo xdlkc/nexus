@@ -432,12 +432,7 @@ impl SourceAdapter for GithubAdapter {
         let mut latest_cursor: Option<String> = cursor.map(str::to_owned);
 
         for repo in &self.config.repos {
-            let issues_endpoint = match cursor {
-                Some(since) => {
-                    format!("repos/{repo}/issues?since={since}&state=open&per_page=20")
-                }
-                None => format!("repos/{repo}/issues?state=open&per_page=20"),
-            };
+            let issues_endpoint = format!("repos/{repo}/issues?state=open&per_page=20");
             if let Ok(iss_out) = self
                 .build_command()
                 .args(["api", &issues_endpoint])
@@ -446,15 +441,9 @@ impl SourceAdapter for GithubAdapter {
                 && iss_out.status.success()
                 && let Ok(raw) = serde_json::from_slice::<serde_json::Value>(&iss_out.stdout)
             {
-                let (mut trigs, max_iso) =
-                    parse_github_issues_json(&self.config, repo, &raw, cursor);
+                let (mut trigs, _) =
+                    parse_github_issues_json(&self.config, repo, &raw, None);
                 out.triggers.append(&mut trigs);
-                if let Some(iso) = max_iso {
-                    latest_cursor = Some(match latest_cursor {
-                        Some(cur) if cur >= iso => cur,
-                        _ => iso,
-                    });
-                }
             }
 
             let ic_endpoint = match cursor {

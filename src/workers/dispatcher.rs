@@ -275,8 +275,16 @@ pub fn build_worker_prompt_with_memory(
          2. When you need full spilled text for a truncated trigger or thread, run `nexus worker read <uri>` (or call `orchestrator_read`).\n\
          3. If a follow-up trigger in your inbox is unrelated to this Ticket, hand it back via `nexus worker handback <trigger_id> --reason \"...\"`.\n\
          4. Before running shell commands or inspecting/modifying files, first output a short 1-sentence Chinese thinking/progress note (<= 45 chars, e.g. \"我先查看一下仓库结构和最近提交记录。\") so Nexus can stream your live thinking process to the user in real time.\n\
-         5. Your final response text is automatically captured and delivered to the user channel, or you may explicitly call `nexus worker report --status <ready|waiting|blocked|failed> --summary \"...\" [--pr-thread github:pr:owner/repo#N --pr-url https://...]` (or `worker_report`).\n\
-         6. Keep any IM-facing summary or reply concise (strictly <= 90 words / characters).{}",
+         5. When solving a GitHub Issue or implementing a feature/bugfix in repository `{}`:\n\
+            - Implement the change cleanly in your current worktree branch (`agent/{}`).\n\
+            - Commit your changes (`git add -A && git commit -m \"...\"`), push the branch (`git push -u origin HEAD`), and open a Pull Request via `gh-agent pr create --repo {} --head agent/{} --base main --title \"...\" --body \"Closes #<issue_number>\\n\\n...\"`.\n\
+            - Always include the full PR URL (`https://github.com/.../pull/N`) in your final summary.\n\
+         6. Your final response text is automatically captured and delivered to the user channel, or you may explicitly call `nexus worker report --status <ready|waiting|blocked|failed> --summary \"...\" [--pr-thread github:pr:owner/repo#N --pr-url https://...]` (or `worker_report`).\n\
+         7. Keep any IM-facing summary or reply concise (strictly <= 90 words / characters).{}",
+        ticket.repo.as_deref().unwrap_or("xdlkc/nexus"),
+        ticket.short_name,
+        ticket.repo.as_deref().unwrap_or("xdlkc/nexus"),
+        ticket.short_name,
         memory_instruction
     ));
 
