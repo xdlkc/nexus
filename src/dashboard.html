@@ -278,7 +278,7 @@
       color: var(--text-muted);
       font-weight: 500;
     }
-    input[type="text"], select, textarea {
+    input[type="text"], input[type="password"], select, textarea {
       background: var(--bg-card);
       border: 1px solid var(--border);
       color: var(--text);
@@ -593,6 +593,64 @@
               </select>
             </div>
           </div>
+
+          <hr style="border:none; border-top:1px solid var(--border); margin:1.25rem 0" />
+          <h3 style="font-size:0.95rem; margin-top:0">Tier-1 System-1 路由分诊器 (`Jev` 规则 / 远端模型切换)</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Jev 运行模式 (`jev.protocol`)</label>
+              <select id="cfg-jev-mode" onchange="onJevModeChange()">
+                <option value="heuristic">本地启发式规则分诊 (HeuristicJevClassifier · 免 Key 零延迟)</option>
+                <option value="typesafe-system-one">远端 TypeSafe System-One (POST /v1/systemone)</option>
+                <option value="openrouter-system-one">远端 OpenRouter System-One (POST /api/v1/systemone)</option>
+                <option value="openai-decisions">远端 OpenAI Decisions (POST /v1/decisions)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Jev 接口地址 (`jev.base_url`)</label>
+              <input type="text" id="cfg-jev-base-url" placeholder="例如 https://api.typesafe.ai/v1" />
+            </div>
+            <div class="form-group">
+              <label>Jev 模型名称 (`jev.model`)</label>
+              <input type="text" id="cfg-jev-model" placeholder="例如 jev-1 或 typesafe/jev-1" />
+            </div>
+            <div class="form-group">
+              <label>Jev API Key (`jev.api_key`)</label>
+              <input type="password" id="cfg-jev-api-key" placeholder="留空则自动回退本地启发式规则" />
+            </div>
+          </div>
+
+          <hr style="border:none; border-top:1px solid var(--border); margin:1.25rem 0" />
+          <h3 style="font-size:0.95rem; margin-top:0">Tier-2 System-2 生成式兜底路由器 (`router_llm`)</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Router LLM Provider</label>
+              <input type="text" id="cfg-router-provider" placeholder="anthropic 或 openai" />
+            </div>
+            <div class="form-group">
+              <label>Router LLM Model</label>
+              <input type="text" id="cfg-router-model" placeholder="claude-sonnet-4-6" />
+            </div>
+            <div class="form-group">
+              <label>Router 思考力度 (`think_effort`)</label>
+              <select id="cfg-router-think">
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">在线测试 Jev 分诊器 (测试唤醒、防注入、任务分类与复杂度评估)</h2>
+          </div>
+          <div style="display:flex; gap:0.75rem; align-items:center;">
+            <input type="text" id="test-jev-input" value="奈克斯，帮我排查一下高并发死锁 race condition 问题" />
+            <button class="btn btn-primary" style="white-space:nowrap" onclick="runJevTest()">测试分诊</button>
+          </div>
+          <pre id="test-jev-output" style="display:none; margin-top:0.85rem; background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:0.85rem; font-size:0.8rem; overflow-x:auto;"></pre>
         </div>
       </section>
 
@@ -670,7 +728,7 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('memory-editor').addEventListener('input', () => { memoryDirty = true; });
-      ['cfg-bot-name','cfg-reply-in-thread','cfg-ack-reaction','cfg-wake-keywords','cfg-chat-ids','cfg-github-repos','cfg-allowed-actors','cfg-default-harness','cfg-default-provider','cfg-default-model','cfg-default-think'].forEach(id => {
+      ['cfg-bot-name','cfg-reply-in-thread','cfg-ack-reaction','cfg-wake-keywords','cfg-chat-ids','cfg-github-repos','cfg-allowed-actors','cfg-default-harness','cfg-default-provider','cfg-default-model','cfg-default-think','cfg-jev-mode','cfg-jev-base-url','cfg-jev-model','cfg-jev-api-key','cfg-router-provider','cfg-router-model','cfg-router-think'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('input', () => { configDirty = true; });
       });
@@ -884,6 +942,23 @@
         document.getElementById('cfg-default-provider').value = firstRuleTarget.provider || 'openai';
         document.getElementById('cfg-default-model').value = firstRuleTarget.model || 'gpt-6-astra';
         document.getElementById('cfg-default-think').value = firstRuleTarget.think_effort || 'medium';
+
+        if (cfg.jev && cfg.jev.protocol) {
+          document.getElementById('cfg-jev-mode').value = cfg.jev.protocol;
+          document.getElementById('cfg-jev-base-url').value = cfg.jev.base_url || '';
+          document.getElementById('cfg-jev-model').value = cfg.jev.model || '';
+          document.getElementById('cfg-jev-api-key').value = cfg.jev.api_key || '';
+        } else {
+          document.getElementById('cfg-jev-mode').value = 'heuristic';
+          document.getElementById('cfg-jev-base-url').value = '';
+          document.getElementById('cfg-jev-model').value = 'heuristic-jev-v1';
+          document.getElementById('cfg-jev-api-key').value = '';
+        }
+
+        const rllm = cfg.router_llm || {};
+        document.getElementById('cfg-router-provider').value = rllm.provider || 'anthropic';
+        document.getElementById('cfg-router-model').value = rllm.model || 'claude-sonnet-4-6';
+        document.getElementById('cfg-router-think').value = rllm.think_effort || 'medium';
       }
 
       // Render Toolchain
@@ -919,8 +994,44 @@
       }
     }
 
+    function onJevModeChange() {
+      configDirty = true;
+      const mode = document.getElementById('cfg-jev-mode').value;
+      const urlEl = document.getElementById('cfg-jev-base-url');
+      const modelEl = document.getElementById('cfg-jev-model');
+      if (mode === 'typesafe-system-one') {
+        if (!urlEl.value) urlEl.value = 'https://api.typesafe.ai/v1';
+        if (!modelEl.value || modelEl.value === 'heuristic-jev-v1') modelEl.value = 'jev-1';
+      } else if (mode === 'openrouter-system-one') {
+        if (!urlEl.value) urlEl.value = 'https://openrouter.ai/api/v1';
+        if (!modelEl.value || modelEl.value === 'heuristic-jev-v1') modelEl.value = 'typesafe/jev-1';
+      } else if (mode === 'openai-decisions') {
+        if (!urlEl.value) urlEl.value = 'https://api.openai.com/v1';
+        if (!modelEl.value || modelEl.value === 'heuristic-jev-v1') modelEl.value = 'gpt-4o-mini';
+      } else {
+        modelEl.value = 'heuristic-jev-v1';
+      }
+    }
+
+    async function runJevTest() {
+      const text = document.getElementById('test-jev-input').value.trim();
+      if (!text) return;
+      const outEl = document.getElementById('test-jev-output');
+      outEl.style.display = 'block';
+      outEl.textContent = '正在执行 Jev 分诊评估...';
+      const res = await fetch('/api/jev/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json();
+      outEl.textContent = JSON.stringify(data, null, 2);
+    }
+
     async function saveConfig() {
       const splitCsv = (s) => s.split(',').map(x => x.trim()).filter(Boolean);
+      const jevMode = document.getElementById('cfg-jev-mode').value;
+      const jevEnabled = jevMode !== 'heuristic';
       const payload = {
         bot_name: document.getElementById('cfg-bot-name').value.trim(),
         reply_in_thread: document.getElementById('cfg-reply-in-thread').value === 'true',
@@ -934,6 +1045,19 @@
           provider: document.getElementById('cfg-default-provider').value.trim() || 'openai',
           model: document.getElementById('cfg-default-model').value.trim() || 'gpt-6-astra',
           think_effort: document.getElementById('cfg-default-think').value
+        },
+        jev_enabled: jevEnabled,
+        jev: jevEnabled ? {
+          protocol: jevMode,
+          base_url: document.getElementById('cfg-jev-base-url').value.trim(),
+          model: document.getElementById('cfg-jev-model').value.trim() || 'jev-1',
+          api_key: document.getElementById('cfg-jev-api-key').value.trim()
+        } : null,
+        router_llm: {
+          provider: document.getElementById('cfg-router-provider').value.trim() || 'anthropic',
+          model: document.getElementById('cfg-router-model').value.trim() || 'claude-sonnet-4-6',
+          think_effort: document.getElementById('cfg-router-think').value || 'medium',
+          max_turns: 4
         }
       };
       const res = await fetch('/api/config', {

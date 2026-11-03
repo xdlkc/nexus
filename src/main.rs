@@ -116,16 +116,21 @@ enum WorkerCommands {
     },
 }
 
-enum RuntimeJev {
-    Http(HttpJevClient),
-    Heuristic(HeuristicJevClassifier),
+struct DynamicJevClassifier {
+    config: Arc<Mutex<NexusConfig>>,
 }
 
-impl JevClassifier for RuntimeJev {
+impl JevClassifier for DynamicJevClassifier {
     async fn classify(&self, context: &ClassifierContext) -> anyhow::Result<ClassifierResult> {
-        match self {
-            Self::Http(c) => c.classify(context).await,
-            Self::Heuristic(h) => h.classify(context).await,
+        let maybe_jcfg = self.config.lock().unwrap().jev.clone();
+        match maybe_jcfg {
+            Some(jcfg) if !jcfg.base_url.trim().is_empty() && !jcfg.api_key.trim().is_empty() => {
+                match HttpJevClient::new(jcfg).classify(context).await {
+                    Ok(res) => Ok(res),
+                    Err(_) => HeuristicJevClassifier.classify(context).await,
+                }
+            }
+            _ => HeuristicJevClassifier.classify(context).await,
         }
     }
 }
@@ -248,14 +253,13 @@ async fn main() -> anyhow::Result<()> {
             };
             engine.state.accept_mode = Some(cfg.accept_mode);
 
-            let jev = match &cfg.jev {
-                Some(jcfg) => RuntimeJev::Http(HttpJevClient::new(jcfg.clone())),
-                None => RuntimeJev::Heuristic(HeuristicJevClassifier),
-            };
             let llm = HttpLlmClient::from_env();
 
             let shared_engine = Arc::new(Mutex::new(engine));
             let shared_cfg = Arc::new(Mutex::new(cfg.clone()));
+            let jev = DynamicJevClassifier {
+                config: Arc::clone(&shared_cfg),
+            };
 
             let mut runtime = NexusRuntime::new(
                 Arc::clone(&shared_engine),

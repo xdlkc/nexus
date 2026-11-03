@@ -4,11 +4,16 @@ use crate::config::{NexusConfig, probe_environment};
 use crate::core::engine::Engine;
 use crate::core::gate::{evaluate_gate_strength, parse_inline_target_directive};
 use crate::core::model::{
-    AcceptMode, ChannelAddress, ExecutionTarget, HarnessKind, ReportStatus, SourceKindId,
-    ThinkEffort, Trigger,
+    AcceptMode, AdmissionStrength, ChannelAddress, ExecutionTarget, HarnessKind, ReportStatus,
+    SourceKindId, ThinkEffort, Trigger,
 };
 use crate::core::recall::RecallCaller;
 use crate::infra::store::SqliteStore;
+use crate::router::jev::{
+    JevClassifier, JevTriageInput, build_jev_triage_context, run_jev_triage,
+};
+use crate::router::jev_http::{HeuristicJevClassifier, HttpJevClient, HttpJevConfig};
+use crate::router::orchestrator::RouterLlmConfig;
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -95,6 +100,14 @@ pub struct UpdateConfigPayload {
     pub github_repos: Option<Vec<String>>,
     pub allowed_actors: Option<Vec<String>>,
     pub default_target: Option<ExecutionTarget>,
+    pub jev_enabled: Option<bool>,
+    pub jev: Option<HttpJevConfig>,
+    pub router_llm: Option<RouterLlmConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TestJevPayload {
+    pub text: String,
 }
 
 /// Builds the `axum::Router` for the management console and worker-callback HTTP server.
@@ -107,6 +120,7 @@ pub fn build_http_router(state: SharedAppState) -> Router {
         .route("/api/tickets/stop", post(handle_stop_ticket))
         .route("/api/triggers", post(handle_post_trigger))
         .route("/api/chat/simulate", post(handle_simulate_chat))
+        .route("/api/jev/test", post(handle_test_jev))
         .route("/api/config", get(handle_get_config).post(handle_update_config))
         .route("/api/memory", get(handle_get_memory).post(handle_save_memory))
         .route("/api/worker/report", post(handle_worker_report))
@@ -218,6 +232,20 @@ async fn handle_update_config(
             rule.default_target = Some(target.clone());
         }
     }
+    if let Some(enabled) = payload.jev_enabled {
+        if enabled {
+            if let Some(jcfg) = payload.jev {
+                cfg.jev = Some(jcfg);
+            }
+        } else {
+            cfg.jev = None;
+        }
+    } else if let Some(jcfg) = payload.jev {
+        cfg.jev = Some(jcfg);
+    }
+    if let Some(rllm) = payload.router_llm {
+        cfg.router_llm = rllm;
+    }
     let _ = cfg.save();
     (
         StatusCode::OK,
@@ -232,6 +260,111 @@ async fn handle_get_memory(State(app): State<SharedAppState>) -> Json<serde_json
         "path": path,
         "content": content,
     }))
+}
+
+async fn handle_test_jev(
+    State(app): State<SharedAppState>,
+    Json(payload): Json<TestJevPayload>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let (cleaned_text, inline_target) = parse_inline_target_directive(&payload.text);
+    let (maybe_jcfg, rules, accept_mode, addressed) = {
+        let cfg = app.config.lock().unwrap();
+        let addr = crate::adapters::feishu::is_feishu_message_addressed(
+            &cfg.feishu,
+            "group",
+            &cleaned_text,
+            false,
+        );
+        (
+            cfg.jev.clone(),
+            cfg.proactive_rules.clone(),
+            cfg.accept_mode,
+            addr,
+        )
+    };
+
+    let trig = Trigger {
+        id: "test-trig-1".to_owned(),
+        source_id: "feishu-main".to_owned(),
+        source_kind: SourceKindId::Feishu,
+        external_id: "test_1".to_owned(),
+        thread_key: "test:thread:1".to_owned(),
+        actor_id: "admin".to_owned(),
+        actor_is_bot: false,
+        addressed_agent: addressed,
+        text: cleaned_text,
+        reply_to_trigger_id: None,
+        inline_target,
+        reply_channel: None,
+        at: chrono::Utc::now().to_rfc3339(),
+        meta: BTreeMap::new(),
+    };
+
+    let triggers = vec![trig];
+    let strength = if addressed {
+        AdmissionStrength::Explicit
+    } else {
+        AdmissionStrength::Inferred
+    };
+    let input = JevTriageInput {
+        triggers: &triggers,
+        strength,
+        accept_mode,
+        thread_messages: &[],
+        open_tickets: &[],
+        rules: &rules,
+    };
+    let ctx = build_jev_triage_context(&input);
+
+    let (mode_used, classify_res, outcome) = match maybe_jcfg {
+        Some(jcfg) if !jcfg.base_url.trim().is_empty() && !jcfg.api_key.trim().is_empty() => {
+            let client = HttpJevClient::new(jcfg);
+            match client.classify(&ctx).await {
+                Ok(res) => {
+                    let out = run_jev_triage(&client, &input).await;
+                    ("remote-http-jev", Ok(res), format!("{out:?}"))
+                }
+                Err(e) => {
+                    let h = HeuristicJevClassifier;
+                    let res = h.classify(&ctx).await;
+                    let out = run_jev_triage(&h, &input).await;
+                    (
+                        "fallback-heuristic-jev",
+                        res.map_err(|_| e),
+                        format!("{out:?} (remote error: {e})"),
+                    )
+                }
+            }
+        }
+        _ => {
+            let h = HeuristicJevClassifier;
+            let res = h.classify(&ctx).await;
+            let out = run_jev_triage(&h, &input).await;
+            ("local-heuristic-jev", res, format!("{out:?}"))
+        }
+    };
+
+    match classify_res {
+        Ok(res) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "mode": mode_used,
+                "addressed": addressed,
+                "strength": strength,
+                "result": res,
+                "triage_outcome": outcome,
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "ok": false,
+                "mode": mode_used,
+                "error": e.to_string(),
+            })),
+        ),
+    }
 }
 
 async fn handle_save_memory(
