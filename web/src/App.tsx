@@ -39,10 +39,10 @@ import {
 } from './api/client';
 import type {
   AcceptMode,
+  HarnessCatalog,
   HarnessKind,
   IdentityStatusResponse,
   NexusOverview,
-  PiModelRow,
   ThinkEffort,
   Ticket,
   WorkerTraceResponse,
@@ -83,7 +83,7 @@ export default function App() {
   const [switchModel, setSwitchModel] = useState('gpt-6-astra');
   const [switchThink, setSwitchThink] = useState<ThinkEffort>('high');
   const [switchReason, setSwitchReason] = useState('管理控制台手动热切换执行引擎');
-  const [piCatalog, setPiCatalog] = useState<PiModelRow[]>([]);
+  const [harnessCatalogs, setHarnessCatalogs] = useState<Record<string, HarnessCatalog>>({});
 
   // Memory Editor
   const [memoryDraft, setMemoryDraft] = useState('');
@@ -202,7 +202,7 @@ export default function App() {
     loadOverview();
     loadIdentity();
     getWorkerModels()
-      .then(setPiCatalog)
+      .then((res) => setHarnessCatalogs(res.harnesses || {}))
       .catch(() => {});
   }, []);
 
@@ -1150,11 +1150,12 @@ export default function App() {
                     3. 默认 Worker 引擎与 Tier-1 Jev / Tier-2 Router 分诊配置
                   </h3>
                   {(() => {
-                    const { providers, models } = getEngineCatalogOptions(
+                    const { providers, models, thinkEfforts } = getEngineCatalogOptions(
                       defHarness,
                       defProvider,
                       defModel,
-                      piCatalog
+                      defThink,
+                      harnessCatalogs
                     );
                     return (
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
@@ -1168,11 +1169,13 @@ export default function App() {
                                 nextH,
                                 defProvider,
                                 defModel,
-                                piCatalog,
+                                defThink,
+                                harnessCatalogs,
                                 true
                               );
                               setDefProvider(nextOpts.recommendedProvider);
                               setDefModel(nextOpts.recommendedModel);
+                              setDefThink(nextOpts.recommendedThink);
                               setCfgDirty(true);
                             }}
                             className="form-input"
@@ -1185,7 +1188,7 @@ export default function App() {
                           </select>
                         </FormField>
 
-                        <FormField label="默认 Provider (下拉选择)">
+                        <FormField label={`默认 Provider (跟随 ${defHarness})`}>
                           <select
                             value={defProvider}
                             onChange={(e) => {
@@ -1195,7 +1198,9 @@ export default function App() {
                                 defHarness,
                                 nextP,
                                 defModel,
-                                piCatalog,
+                                defThink,
+                                harnessCatalogs,
+                                false,
                                 true
                               );
                               setDefModel(nextOpts.recommendedModel);
@@ -1211,7 +1216,7 @@ export default function App() {
                           </select>
                         </FormField>
 
-                        <FormField label="默认 Model (下拉选择)">
+                        <FormField label={`默认 Model (跟随 ${defHarness}/${defProvider})`}>
                           <select
                             value={defModel}
                             onChange={(e) => {
@@ -1228,7 +1233,7 @@ export default function App() {
                           </select>
                         </FormField>
 
-                        <FormField label="默认思考程度 (`ThinkEffort`)">
+                        <FormField label={`默认思考程度 (跟随 ${defHarness})`}>
                           <select
                             value={defThink}
                             onChange={(e) => {
@@ -1237,11 +1242,11 @@ export default function App() {
                             }}
                             className="form-input"
                           >
-                            <option value="minimal">minimal (极简推理 · 最快)</option>
-                            <option value="low">low (轻量推理)</option>
-                            <option value="medium">medium (标准推理 · 推荐)</option>
-                            <option value="high">high (深度推理)</option>
-                            <option value="xhigh">xhigh (极限推理 · 复杂架构/死锁)</option>
+                            {thinkEfforts.map((te) => (
+                              <option key={te} value={te}>
+                                {formatThinkLabel(defHarness, te)}
+                              </option>
+                            ))}
                           </select>
                         </FormField>
                       </div>
@@ -1433,11 +1438,12 @@ export default function App() {
             </div>
 
             {(() => {
-              const { providers, models } = getEngineCatalogOptions(
+              const { providers, models, thinkEfforts } = getEngineCatalogOptions(
                 switchHarness,
                 switchProvider,
                 switchModel,
-                piCatalog
+                switchThink,
+                harnessCatalogs
               );
               return (
                 <div className="space-y-3 text-xs">
@@ -1451,11 +1457,13 @@ export default function App() {
                           nextH,
                           switchProvider,
                           switchModel,
-                          piCatalog,
+                          switchThink,
+                          harnessCatalogs,
                           true
                         );
                         setSwitchProvider(nextOpts.recommendedProvider);
                         setSwitchModel(nextOpts.recommendedModel);
+                        setSwitchThink(nextOpts.recommendedThink);
                       }}
                       className="form-input"
                     >
@@ -1466,7 +1474,7 @@ export default function App() {
                       <option value="opencode">opencode (OpenCode CLI)</option>
                     </select>
                   </FormField>
-                  <FormField label="Provider (下拉选择)">
+                  <FormField label={`Provider (跟随 ${switchHarness})`}>
                     <select
                       value={switchProvider}
                       onChange={(e) => {
@@ -1476,7 +1484,9 @@ export default function App() {
                           switchHarness,
                           nextP,
                           switchModel,
-                          piCatalog,
+                          switchThink,
+                          harnessCatalogs,
+                          false,
                           true
                         );
                         setSwitchModel(nextOpts.recommendedModel);
@@ -1490,7 +1500,7 @@ export default function App() {
                       ))}
                     </select>
                   </FormField>
-                  <FormField label="Model (下拉选择)">
+                  <FormField label={`Model (跟随 ${switchHarness}/${switchProvider})`}>
                     <select
                       value={switchModel}
                       onChange={(e) => setSwitchModel(e.target.value)}
@@ -1503,17 +1513,17 @@ export default function App() {
                       ))}
                     </select>
                   </FormField>
-                  <FormField label="思考程度 (`ThinkEffort`)">
+                  <FormField label={`思考程度 (跟随 ${switchHarness})`}>
                     <select
                       value={switchThink}
                       onChange={(e) => setSwitchThink(e.target.value as ThinkEffort)}
                       className="form-input"
                     >
-                      <option value="minimal">minimal (极简推理)</option>
-                      <option value="low">low (轻量推理)</option>
-                      <option value="medium">medium (标准推理)</option>
-                      <option value="high">high (深度推理)</option>
-                      <option value="xhigh">xhigh (极限推理)</option>
+                      {thinkEfforts.map((te) => (
+                        <option key={te} value={te}>
+                          {formatThinkLabel(switchHarness, te)}
+                        </option>
+                      ))}
                     </select>
                   </FormField>
                   <FormField label="切换原因 (写入 Handoff 卡片)">
@@ -1634,101 +1644,152 @@ const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({
   </div>
 );
 
-const DEFAULT_PROVIDER_MODELS: Record<string, string[]> = {
-  openai: [
-    'gpt-6-astra',
-    'gpt-6.1-sol',
-    'gpt-6.1-terra',
-    'gpt-6-sol',
-    'gpt-6-luna',
-    'gpt-5.6-sol',
-    'gpt-5.6-cyber',
-    'gpt-5.5-pro',
-    'gpt-5.4',
-    'gpt-5.3-codex',
-    'gpt-5.3-codex-spark',
-    'o3-pro',
-    'o3',
-    'o4-mini',
-    'gpt-4.1',
-    'gpt-4o',
-  ],
-  anthropic: [
-    'claude-sonnet-4-6',
-    'claude-opus-4-6',
-    'claude-haiku-4-5',
-  ],
-  hub: [
-    'zenmux/anthropic/claude-sonnet-5.5',
-    'zenmux/anthropic/claude-opus-5.5',
-    'zenmux/anthropic/claude-haiku-5.5',
-    'deepseek/deepseek-v4-pro',
-    'deepseek/deepseek-flash',
-    'glm/glm-5.3',
-    'glm/glm-5.3-flash',
-    'kimi/k3.1-pro',
-    'kimi/k3.1-pro-highspeed',
-    'minimax/MiniMax-M3.1-Flash',
-  ],
-  xai: ['grok-4.7', 'grok-4.6', 'grok-4.5', 'grok-4.3'],
+const FALLBACK_HARNESS_CATALOGS: Record<string, HarnessCatalog> = {
+  codex: {
+    default_provider: 'openai',
+    default_model: 'gpt-6-astra',
+    default_think_effort: 'high',
+    think_efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+    providers: {
+      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-5.3-codex', 'o3-pro'],
+    },
+  },
+  'claude-code': {
+    default_provider: 'hub',
+    default_model: 'zenmux/anthropic/claude-sonnet-5.5',
+    default_think_effort: 'high',
+    think_efforts: ['low', 'medium', 'high', 'xhigh'],
+    providers: {
+      hub: [
+        'zenmux/anthropic/claude-sonnet-5.5',
+        'zenmux/anthropic/claude-opus-5.5',
+        'zenmux/anthropic/claude-haiku-5.5',
+        'deepseek/deepseek-v4-pro',
+        'glm/glm-5.3',
+        'kimi/k3.1-pro',
+      ],
+      anthropic: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5'],
+    },
+  },
+  'pi-rpc': {
+    default_provider: 'hub',
+    default_model: 'zenmux/anthropic/claude-sonnet-5.5',
+    default_think_effort: 'medium',
+    think_efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+    providers: {
+      hub: ['zenmux/anthropic/claude-sonnet-5.5', 'deepseek/deepseek-v4-pro', 'glm/glm-5.3', 'kimi/k3.1-pro'],
+      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol'],
+      xai: ['grok-4.7', 'grok-4.6'],
+    },
+  },
+  'pi-native': {
+    default_provider: 'anthropic',
+    default_model: 'claude-sonnet-4-6',
+    default_think_effort: 'medium',
+    think_efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+    providers: {
+      anthropic: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5'],
+      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol'],
+    },
+  },
+  opencode: {
+    default_provider: 'anthropic',
+    default_model: 'claude-sonnet-5-5',
+    default_think_effort: 'medium',
+    think_efforts: ['low', 'medium', 'high'],
+    providers: {
+      anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-sonnet-4-6', 'claude-opus-4-6'],
+      hub: ['zenmux/anthropic/claude-sonnet-5.5', 'deepseek/deepseek-v4-pro', 'glm/glm-5.3'],
+      openai: ['gpt-6-astra', 'gpt-6.1-sol'],
+    },
+  },
 };
+
+function formatThinkLabel(harness: HarnessKind, te: ThinkEffort): string {
+  if (harness === 'claude-code' && te === 'xhigh') {
+    return 'xhigh (--effort max · Claude 极限推理)';
+  }
+  switch (te) {
+    case 'off':
+      return 'off (关闭思考)';
+    case 'minimal':
+      return 'minimal (极简推理)';
+    case 'low':
+      return 'low (轻量推理)';
+    case 'medium':
+      return 'medium (标准推理)';
+    case 'high':
+      return 'high (深度推理)';
+    case 'xhigh':
+      return 'xhigh (极限推理)';
+  }
+}
 
 function getEngineCatalogOptions(
   harness: HarnessKind,
   currentProvider: string,
   currentModel: string,
-  piCatalog: PiModelRow[],
-  resetOnChange = false
+  currentThink: ThinkEffort,
+  harnessCatalogs: Record<string, HarnessCatalog>,
+  resetHarness = false,
+  resetProvider = false
 ): {
   providers: string[];
   models: string[];
+  thinkEfforts: ThinkEffort[];
   recommendedProvider: string;
   recommendedModel: string;
+  recommendedThink: ThinkEffort;
 } {
-  let baseProviders: string[];
-  if (harness === 'codex') {
-    baseProviders = ['openai'];
-  } else if (harness === 'claude-code') {
-    baseProviders = ['anthropic', 'hub'];
-  } else if (harness === 'pi-native') {
-    baseProviders = ['openai', 'anthropic'];
-  } else {
-    const fromPi = Array.from(new Set(piCatalog.map((r) => r.provider)));
-    baseProviders = Array.from(
-      new Set([...fromPi, 'openai', 'anthropic', 'hub', 'xai'])
-    );
-  }
+  const cat = harnessCatalogs[harness] || FALLBACK_HARNESS_CATALOGS[harness] || FALLBACK_HARNESS_CATALOGS.codex;
+  const providerKeys = Object.keys(cat.providers);
 
-  const recommendedProvider = baseProviders.includes(currentProvider)
+  const recommendedProvider = resetHarness
+    ? cat.default_provider || providerKeys[0] || 'openai'
+    : providerKeys.includes(currentProvider)
     ? currentProvider
-    : baseProviders[0] || 'openai';
+    : cat.default_provider || providerKeys[0] || 'openai';
 
   const providers =
-    !resetOnChange && currentProvider && !baseProviders.includes(currentProvider)
-      ? [currentProvider, ...baseProviders]
-      : baseProviders;
+    !resetHarness && currentProvider && !providerKeys.includes(currentProvider)
+      ? [currentProvider, ...providerKeys]
+      : providerKeys;
 
-  const activeProvider = resetOnChange ? recommendedProvider : currentProvider || recommendedProvider;
-  const fromCatalog = piCatalog
-    .filter((r) => r.provider === activeProvider)
-    .map((r) => r.model);
-  const builtin = DEFAULT_PROVIDER_MODELS[activeProvider] || [];
-  const mergedModels = Array.from(new Set([...builtin, ...fromCatalog]));
+  const activeProvider = resetHarness || resetProvider ? recommendedProvider : currentProvider || recommendedProvider;
+  const providerModels = cat.providers[activeProvider] || [];
 
-  const recommendedModel = mergedModels.includes(currentModel)
+  const recommendedModel = resetHarness
+    ? activeProvider === cat.default_provider && providerModels.includes(cat.default_model)
+      ? cat.default_model
+      : providerModels[0] || cat.default_model
+    : resetProvider
+    ? providerModels[0] || cat.default_model
+    : providerModels.includes(currentModel)
     ? currentModel
-    : mergedModels[0] || 'gpt-6-astra';
+    : providerModels[0] || cat.default_model;
 
   const models =
-    !resetOnChange && currentModel && !mergedModels.includes(currentModel)
-      ? [currentModel, ...mergedModels]
-      : mergedModels;
+    !resetHarness && !resetProvider && currentModel && !providerModels.includes(currentModel)
+      ? [currentModel, ...providerModels]
+      : providerModels;
+
+  const thinkEfforts = cat.think_efforts?.length
+    ? cat.think_efforts
+    : (['low', 'medium', 'high'] as ThinkEffort[]);
+
+  const recommendedThink = resetHarness
+    ? cat.default_think_effort || thinkEfforts[0] || 'medium'
+    : thinkEfforts.includes(currentThink)
+    ? currentThink
+    : cat.default_think_effort || thinkEfforts[0] || 'medium';
 
   return {
     providers,
     models,
+    thinkEfforts,
     recommendedProvider,
     recommendedModel,
+    recommendedThink,
   };
 }
 

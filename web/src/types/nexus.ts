@@ -236,3 +236,16 @@ export interface PiModelRow {
   provider: string;
   model: string;
 }
+
+export interface HarnessCatalog {
+  default_provider: string;
+  default_model: string;
+  default_think_effort: ThinkEffort;
+  think_efforts: ThinkEffort[];
+  providers: Record<string, string[]>;
+}
+
+export interface WorkerModelsResponse {
+  models: PiModelRow[];
+  harnesses: Record<string, HarnessCatalog>;
+}

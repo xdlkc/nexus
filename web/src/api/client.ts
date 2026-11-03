@@ -2,7 +2,7 @@ import type {
   AcceptMode,
   IdentityStatusResponse,
   NexusOverview,
-  PiModelRow,
+  WorkerModelsResponse,
   WorkerTraceResponse,
 } from '../types/nexus';
 
@@ -25,11 +25,14 @@ export async function getIdentityStatus(): Promise<IdentityStatusResponse> {
   return res.json();
 }
 
-export async function getWorkerModels(): Promise<PiModelRow[]> {
+export async function getWorkerModels(): Promise<WorkerModelsResponse> {
   const res = await fetch('/api/worker/models');
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Failed to load Pi catalog');
-  return data.models || [];
+  if (!res.ok) throw new Error(data.error || 'Failed to load harness catalogs');
+  return {
+    models: data.models || [],
+    harnesses: data.harnesses || {},
+  };
 }
 
 export async function setAcceptMode(accept_mode: AcceptMode): Promise<void> {

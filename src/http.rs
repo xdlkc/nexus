@@ -152,15 +152,12 @@ pub fn build_http_router(state: SharedAppState) -> Router {
         .with_state(state)
 }
 
-async fn handle_worker_models()
--> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    match crate::workers::catalog::load_pi_models().await {
-        Ok(models) => Ok(Json(serde_json::json!({ "models": models }))),
-        Err(error) => Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        )),
-    }
+async fn handle_worker_models() -> Json<serde_json::Value> {
+    let (models, harnesses) = crate::workers::catalog::load_all_harness_catalogs().await;
+    Json(serde_json::json!({
+        "models": models,
+        "harnesses": harnesses,
+    }))
 }
 
 async fn handle_dashboard() -> Html<String> {
