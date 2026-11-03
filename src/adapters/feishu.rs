@@ -267,11 +267,17 @@ pub fn parse_feishu_messages_json(
                 .unwrap_or(false);
 
         // Skip the bot's own outbound messages to prevent self-loops.
-        if cfg
-            .bot_open_id
-            .as_deref()
-            .map(|b| b == sender_id)
-            .unwrap_or(false)
+        if actor_is_bot
+            || cfg
+                .bot_open_id
+                .as_deref()
+                .map(|b| b == sender_id)
+                .unwrap_or(false)
+            || cfg
+                .profile
+                .as_deref()
+                .map(|p| p == sender_id)
+                .unwrap_or(false)
         {
             continue;
         }
@@ -353,6 +359,7 @@ pub fn parse_feishu_messages_json(
         });
     }
 
+    triggers.sort_by(|a, b| a.at.cmp(&b.at));
     (triggers, max_ts.map(|v| v.to_string()))
 }
 
@@ -426,10 +433,15 @@ pub fn parse_feishu_event_ndjson(
                 .as_deref()
                 .is_some_and(|b| b == sender_id);
 
-        if cfg
-            .bot_open_id
-            .as_deref()
-            .is_some_and(|b| b == sender_id)
+        if actor_is_bot
+            || cfg
+                .bot_open_id
+                .as_deref()
+                .is_some_and(|b| b == sender_id)
+            || cfg
+                .profile
+                .as_deref()
+                .is_some_and(|p| p == sender_id)
         {
             continue;
         }
@@ -587,6 +599,7 @@ impl SourceAdapter for FeishuAdapter {
                 "container_id_type": "chat",
                 "container_id": chat_id,
                 "page_size": 20,
+                "sort_type": "ByCreateTimeDesc",
             })
             .to_string();
             let mut output = self

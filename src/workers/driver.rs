@@ -723,10 +723,16 @@ pub async fn run_cli_harness_worker(
 ) -> anyhow::Result<WorkerExecutionResult> {
     let spec = build_cli_harness_spec(ctx);
 
+    let stdin_cfg = if spec.stdin_lines.is_empty() {
+        Stdio::null()
+    } else {
+        Stdio::piped()
+    };
+
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args)
         .current_dir(&ctx.worktree_dir)
-        .stdin(Stdio::piped())
+        .stdin(stdin_cfg)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -740,14 +746,13 @@ pub async fn run_cli_harness_worker(
     }
 
     let mut child = cmd.spawn()?;
-    if !spec.stdin_lines.is_empty()
-        && let Some(mut stdin) = child.stdin.take() {
-            for line in &spec.stdin_lines {
-                stdin.write_all(line.as_bytes()).await?;
-                stdin.write_all(b"\n").await?;
-            }
-            stdin.flush().await?;
+    if let Some(mut stdin) = child.stdin.take() {
+        for line in &spec.stdin_lines {
+            stdin.write_all(line.as_bytes()).await?;
+            stdin.write_all(b"\n").await?;
         }
+        stdin.flush().await?;
+    }
 
     let stdout_pipe = child.stdout.take().unwrap();
     let stderr_pipe = child.stderr.take().unwrap();

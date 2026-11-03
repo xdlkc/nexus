@@ -11,37 +11,46 @@ pub async fn prepare_worktree(
     worktree_dir: &Path,
     short_name: &str,
 ) -> anyhow::Result<()> {
-    if worktree_dir.exists() {
+    let abs_worktree_dir = if worktree_dir.is_absolute() {
+        worktree_dir.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| Path::new(".").to_path_buf())
+            .join(worktree_dir)
+    };
+
+    if abs_worktree_dir.exists() {
         return Ok(());
     }
 
-    if let Some(parent) = worktree_dir.parent() {
+    if let Some(parent) = abs_worktree_dir.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
     if let Some(repo_dir) = repo_checkout
-        && repo_dir.join(".git").exists() {
-            let branch = format!("agent/{short_name}");
-            let output = Command::new("git")
-                .current_dir(repo_dir)
-                .args([
-                    "worktree",
-                    "add",
-                    "-B",
-                    &branch,
-                    &worktree_dir.to_string_lossy(),
-                    "HEAD",
-                ])
-                .output()
-                .await?;
+        && repo_dir.join(".git").exists()
+    {
+        let branch = format!("agent/{short_name}");
+        let output = Command::new("git")
+            .current_dir(repo_dir)
+            .args([
+                "worktree",
+                "add",
+                "-B",
+                &branch,
+                &abs_worktree_dir.to_string_lossy(),
+                "HEAD",
+            ])
+            .output()
+            .await?;
 
-            if output.status.success() {
-                return Ok(());
-            }
+        if output.status.success() && abs_worktree_dir.exists() {
+            return Ok(());
         }
+    }
 
     // Fallback when no git repository is configured or initialized yet.
-    tokio::fs::create_dir_all(worktree_dir).await?;
+    tokio::fs::create_dir_all(&abs_worktree_dir).await?;
     Ok(())
 }
 

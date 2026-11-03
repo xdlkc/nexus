@@ -263,7 +263,7 @@ pub fn build_worker_prompt_with_memory(
 
     let memory_instruction = match abs_memory_path {
         Some(p) => format!(
-            "\n6. Maintain conversational continuity using `Recent Conversation History in This Chat` and `Persistent Long-Term Memory` above. When the user tells you personal details, preferences, or long-term project rules to remember, save or append them to `{}`.",
+            "\n7. Maintain conversational continuity using `Recent Conversation History in This Chat` and `Persistent Long-Term Memory` above. When the user tells you personal details, preferences, long-term project rules, or when you reach agreed conclusions, decisions, or ideas during discussions, proactively save or append them to `{}`.",
             p.display()
         ),
         None => String::new(),
