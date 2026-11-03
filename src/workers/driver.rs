@@ -526,18 +526,29 @@ pub async fn run_pi_native_worker<L: LlmClient>(
     let mut current_effort = ctx.target.think_effort;
 
     let mut messages = vec![
-        LlmMessage::system(
+        LlmMessage::system(format!(
             "You are a Nexus `pi-native` autonomous engineering worker.\n\
-             Inspect files, make minimal accurate edits, verify with tests, and finish by calling `worker_report`.",
-        ),
+             Active Runtime Engine: harness=`pi-native` (built-in Rust ReAct loop inside the `nexus` daemon process), provider=`{}`, model=`{}`, think_effort=`{}`.\n\
+             Inspect files, make minimal accurate edits, verify with tests, and finish promptly by calling `worker_report` with a concise Chinese summary (<= 85 characters).",
+            ctx.target.provider,
+            ctx.target.model,
+            current_effort.as_str()
+        )),
         LlmMessage::user(ctx.prompt.clone()),
     ];
     let tools = pi_native_tool_specs();
     let mut last_text = String::new();
     let mut trace_seq = 0usize;
+    let mut sent_progress_count = 0usize;
+    let max_turns = ctx.max_turns.max(1);
 
-    for _ in 0..ctx.max_turns.max(1) {
-        let resp = llm
+    for turn in 0..max_turns {
+        if turn > 0 && turn + 1 == max_turns {
+            messages.push(LlmMessage::user(
+                "已达到最大工具轮次，请勿再执行其他命令，立即调用 `worker_report` 提交最终简短中文结论（<= 85 字）。",
+            ));
+        }
+        let resp = match llm
             .complete(&LlmCompletionRequest {
                 provider: ctx.target.provider.clone(),
                 model: ctx.target.model.clone(),
@@ -546,7 +557,25 @@ pub async fn run_pi_native_worker<L: LlmClient>(
                 tools: tools.clone(),
                 max_tokens: 8_192,
             })
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                append_worker_trace_step(
+                    &ctx.state_dir,
+                    &mut trace_seq,
+                    &ctx.assignment_id,
+                    &ctx.ticket_id,
+                    "error",
+                    format!(
+                        "pi-native LLM 调用失败 ({}/{})",
+                        ctx.target.provider, ctx.target.model
+                    ),
+                    e.to_string(),
+                );
+                return Err(e);
+            }
+        };
 
         if trace_seq == 0 {
             append_worker_trace_step(
@@ -588,14 +617,21 @@ pub async fn run_pi_native_worker<L: LlmClient>(
             .iter()
             .all(|tc| tc.name == "worker_report");
         if !has_only_report
+            && sent_progress_count < 3
             && !resp.content.trim().is_empty()
             && let Some(tx) = &ctx.progress_tx
         {
+            let first_line = resp
+                .content
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or(resp.content.trim());
             let note = crate::core::recall::truncate_to_im_word_limit(
-                &format!("💭 {}", resp.content.trim()),
+                &format!("💭 {}", first_line.trim()),
                 85,
             );
             let _ = tx.send(note);
+            sent_progress_count += 1;
         }
 
         messages.push(LlmMessage::assistant(
@@ -627,12 +663,12 @@ pub async fn run_pi_native_worker<L: LlmClient>(
                         "dropped" => ReportStatus::Dropped,
                         _ => ReportStatus::Ready,
                     };
-                    let summary = tc
+                    let raw_summary = tc
                         .arguments
                         .get("summary")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("Completed task")
-                        .to_owned();
+                        .unwrap_or("Completed task");
+                    let summary = crate::core::recall::truncate_to_im_word_limit(raw_summary, 95);
                     let question = tc
                         .arguments
                         .get("question")
@@ -642,12 +678,23 @@ pub async fn run_pi_native_worker<L: LlmClient>(
                         .arguments
                         .get("pull_request_thread_key")
                         .and_then(|v| v.as_str())
+                        .filter(|s| !s.trim().is_empty())
                         .map(str::to_owned);
                     let pr_url = tc
                         .arguments
                         .get("pull_request_url")
                         .and_then(|v| v.as_str())
+                        .filter(|s| !s.trim().is_empty())
                         .map(str::to_owned);
+                    append_worker_trace_step(
+                        &ctx.state_dir,
+                        &mut trace_seq,
+                        &ctx.assignment_id,
+                        &ctx.ticket_id,
+                        "finish",
+                        format!("pi-native 执行完成 (status={status:?})"),
+                        &summary,
+                    );
                     return Ok(WorkerExecutionResult {
                         status,
                         summary,
@@ -763,6 +810,15 @@ pub async fn run_pi_native_worker<L: LlmClient>(
                         Ok(val) => val.to_string(),
                         Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
                     };
+                    append_worker_trace_step(
+                        &ctx.state_dir,
+                        &mut trace_seq,
+                        &ctx.assignment_id,
+                        &ctx.ticket_id,
+                        "tool_result",
+                        format!("命令结果: {command}"),
+                        res.chars().take(4_000).collect::<String>(),
+                    );
                     messages.push(LlmMessage::tool_result(tc.id, res));
                 }
                 "job_output" => {
@@ -1056,7 +1112,6 @@ pub async fn run_cli_harness_worker(
     );
 
     let (pull_request_thread_key, pull_request_url) = extract_github_pr_reference(&summary)
-        .or_else(|| extract_github_pr_reference(&stdout))
         .map(|(k, u)| (Some(k), Some(u)))
         .unwrap_or((None, None));
 

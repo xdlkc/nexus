@@ -723,6 +723,14 @@ impl Engine {
 
     /// Binds a pull request Thread to a Ticket so closing/merging the PR completes the Ticket.
     pub fn bind_pull_request(&mut self, ticket_id: &str, pr_thread_key: &str, own: bool) {
+        if self
+            .state
+            .threads
+            .get(pr_thread_key)
+            .is_some_and(|t| t.closed_outcome.is_some())
+        {
+            return;
+        }
         if let Some(ticket) = self.state.tickets.get_mut(ticket_id) {
             ticket.subscriptions.insert(pr_thread_key.to_owned());
             if let Some(existing) = ticket

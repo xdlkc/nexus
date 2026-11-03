@@ -143,6 +143,37 @@ struct ResolvedProviderEndpoint {
     api: String,
     base_url: String,
     api_key: Option<String>,
+    requires_reasoning_content: bool,
+    supports_reasoning_effort: bool,
+    thinking_level_map: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+fn resolve_pi_api_key_value(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("!cat ") {
+        let path = rest.trim().trim_matches('\'').trim_matches('"');
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let key = content.trim().to_owned();
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+    if let Some(cmd) = trimmed.strip_prefix('!') {
+        if let Ok(out) = std::process::Command::new("sh").arg("-c").arg(cmd).output()
+            && out.status.success()
+        {
+            let key = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+        return None;
+    }
+    Some(trimmed.to_owned())
 }
 
 fn resolve_pi_provider_endpoint(provider: &str, model: &str) -> Option<ResolvedProviderEndpoint> {
@@ -150,6 +181,9 @@ fn resolve_pi_provider_endpoint(provider: &str, model: &str) -> Option<ResolvedP
     let mut api = String::new();
     let mut base_url = String::new();
     let mut api_key: Option<String> = None;
+    let mut requires_reasoning_content = provider == "hub" || model.contains("deepseek");
+    let mut supports_reasoning_effort = true;
+    let mut thinking_level_map = None;
 
     if let Ok(raw) = std::fs::read_to_string(format!("{home}/.pi/agent/models.json"))
         && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
@@ -161,10 +195,8 @@ fn resolve_pi_provider_endpoint(provider: &str, model: &str) -> Option<ResolvedP
         if let Some(b) = p_obj.get("baseUrl").and_then(|v| v.as_str()) {
             base_url = b.to_owned();
         }
-        if let Some(k) = p_obj.get("apiKey").and_then(|v| v.as_str())
-            && !k.is_empty()
-        {
-            api_key = Some(k.to_owned());
+        if let Some(k) = p_obj.get("apiKey").and_then(|v| v.as_str()) {
+            api_key = resolve_pi_api_key_value(k);
         }
         if let Some(models) = p_obj.get("models").and_then(|v| v.as_array()) {
             for m in models {
@@ -176,9 +208,24 @@ fn resolve_pi_provider_endpoint(provider: &str, model: &str) -> Option<ResolvedP
                         base_url = mb.to_owned();
                     }
                     if let Some(mk) = m.get("apiKey").and_then(|v| v.as_str())
-                        && !mk.is_empty()
+                        && let Some(resolved_k) = resolve_pi_api_key_value(mk)
                     {
-                        api_key = Some(mk.to_owned());
+                        api_key = Some(resolved_k);
+                    }
+                    if let Some(compat) = m.get("compat") {
+                        if let Some(req_rc) = compat
+                            .get("requiresReasoningContentOnAssistantMessages")
+                            .and_then(|v| v.as_bool())
+                        {
+                            requires_reasoning_content = req_rc;
+                        }
+                        supports_reasoning_effort = compat
+                            .get("supportsReasoningEffort")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                    }
+                    if let Some(tmap) = m.get("thinkingLevelMap").and_then(|v| v.as_object()) {
+                        thinking_level_map = Some(tmap.clone());
                     }
                     break;
                 }
@@ -196,9 +243,8 @@ fn resolve_pi_provider_endpoint(provider: &str, model: &str) -> Option<ResolvedP
             .or_else(|| a_obj.get("access"))
             .or_else(|| a_obj.get("token"))
             .and_then(|v| v.as_str())
-            && !k.is_empty()
         {
-            api_key = Some(k.to_owned());
+            api_key = resolve_pi_api_key_value(k);
         }
     }
 
@@ -210,6 +256,9 @@ fn resolve_pi_provider_endpoint(provider: &str, model: &str) -> Option<ResolvedP
         api,
         base_url,
         api_key,
+        requires_reasoning_content,
+        supports_reasoning_effort,
+        thinking_level_map,
     })
 }
 
@@ -394,10 +443,17 @@ impl HttpLlmClient {
         req: &LlmCompletionRequest,
         override_base_url: Option<&str>,
         override_api_key: Option<&str>,
+        resolved: Option<&ResolvedProviderEndpoint>,
     ) -> anyhow::Result<LlmCompletionResponse> {
         let api_key = override_api_key
             .or(self.openai_api_key.as_deref())
             .ok_or_else(|| anyhow::anyhow!("OPENAI_API_KEY is not configured"))?;
+        let requires_reasoning_content = resolved
+            .map(|r| r.requires_reasoning_content)
+            .unwrap_or_else(|| req.provider == "hub" || req.model.contains("deepseek"));
+        let supports_reasoning_effort = resolved
+            .map(|r| r.supports_reasoning_effort)
+            .unwrap_or(true);
 
         let mut messages = Vec::new();
         for msg in &req.messages {
@@ -415,6 +471,9 @@ impl HttpLlmClient {
                         "role": "assistant",
                         "content": msg.content,
                     });
+                    if requires_reasoning_content {
+                        obj["reasoning_content"] = serde_json::Value::String(msg.content.clone());
+                    }
                     if !msg.tool_calls.is_empty() {
                         let tcs: Vec<serde_json::Value> = msg
                             .tool_calls
@@ -464,8 +523,17 @@ impl HttpLlmClient {
         if !tools.is_empty() {
             body["tools"] = serde_json::Value::Array(tools);
         }
-        if let Some(effort) = openai_reasoning_effort(req.think_effort) {
-            body["reasoning_effort"] = serde_json::Value::String(effort.to_owned());
+        if supports_reasoning_effort {
+            let mapped_effort = if let Some(tmap) = resolved.and_then(|r| r.thinking_level_map.as_ref()) {
+                tmap.get(req.think_effort.as_str())
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            } else {
+                openai_reasoning_effort(req.think_effort).map(str::to_owned)
+            };
+            if let Some(effort) = mapped_effort {
+                body["reasoning_effort"] = serde_json::Value::String(effort);
+            }
         }
 
         let base = override_base_url
@@ -495,11 +563,17 @@ impl HttpLlmClient {
             .and_then(|c| c.get("message"))
             .ok_or_else(|| anyhow::anyhow!("Missing choices[0].message in OpenAI response"))?;
 
-        let content = msg
+        let mut content = msg
             .get("content")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_owned();
+        if content.trim().is_empty()
+            && let Some(rc) = msg.get("reasoning_content").and_then(|v| v.as_str())
+            && !rc.trim().is_empty()
+        {
+            content = rc.trim().to_owned();
+        }
         let mut tool_calls = Vec::new();
         if let Some(tcs) = msg.get("tool_calls").and_then(|v| v.as_array()) {
             for tc in tcs {
@@ -555,7 +629,7 @@ impl LlmClient for HttpLlmClient {
             self.complete_anthropic(request, override_base, override_key)
                 .await
         } else {
-            self.complete_openai(request, override_base, override_key)
+            self.complete_openai(request, override_base, override_key, resolved.as_ref())
                 .await
         }
     }

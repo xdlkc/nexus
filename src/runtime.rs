@@ -146,8 +146,8 @@ where
             }
         }
 
-        // 1b. Poll DingTalk (`dws`) if chats or robot_code are configured
-        if !dingtalk_cfg.chat_ids.is_empty() || dingtalk_cfg.robot_code.is_some() {
+        // 1b. Poll DingTalk (`dws`) if chats are configured
+        if !dingtalk_cfg.chat_ids.is_empty() {
             let cursor = self
                 .store
                 .get_cursor(&dingtalk_cfg.source_id, "latest_create_time")?;
@@ -466,7 +466,7 @@ where
                         state_dir,
                         api_url,
                         prompt,
-                        max_turns: 8,
+                        max_turns: 16,
                         progress_tx: Some(progress_tx),
                     };
 
