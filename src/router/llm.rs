@@ -127,7 +127,8 @@ pub fn openai_reasoning_effort(effort: ThinkEffort) -> Option<&'static str> {
     }
 }
 
-/// Concrete HTTP LLM client supporting Anthropic Messages API and OpenAI-compatible Chat Completions.
+/// Concrete HTTP LLM client supporting Anthropic Messages API and OpenAI-compatible Chat Completions,
+/// plus custom Pi providers (`hub`, `kimi-coding`, etc.) defined in `~/.pi/agent/models.json` & `auth.json`.
 #[derive(Clone)]
 pub struct HttpLlmClient {
     http: reqwest::Client,
@@ -135,6 +136,81 @@ pub struct HttpLlmClient {
     anthropic_api_key: Option<String>,
     openai_base_url: String,
     openai_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedProviderEndpoint {
+    api: String,
+    base_url: String,
+    api_key: Option<String>,
+}
+
+fn resolve_pi_provider_endpoint(provider: &str, model: &str) -> Option<ResolvedProviderEndpoint> {
+    let home = std::env::var("HOME").ok()?;
+    let mut api = String::new();
+    let mut base_url = String::new();
+    let mut api_key: Option<String> = None;
+
+    if let Ok(raw) = std::fs::read_to_string(format!("{home}/.pi/agent/models.json"))
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+        && let Some(p_obj) = val.pointer(&format!("/providers/{provider}"))
+    {
+        if let Some(a) = p_obj.get("api").and_then(|v| v.as_str()) {
+            api = a.to_owned();
+        }
+        if let Some(b) = p_obj.get("baseUrl").and_then(|v| v.as_str()) {
+            base_url = b.to_owned();
+        }
+        if let Some(k) = p_obj.get("apiKey").and_then(|v| v.as_str())
+            && !k.is_empty()
+        {
+            api_key = Some(k.to_owned());
+        }
+        if let Some(models) = p_obj.get("models").and_then(|v| v.as_array()) {
+            for m in models {
+                if m.get("id").and_then(|v| v.as_str()) == Some(model) {
+                    if let Some(ma) = m.get("api").and_then(|v| v.as_str()) {
+                        api = ma.to_owned();
+                    }
+                    if let Some(mb) = m.get("baseUrl").and_then(|v| v.as_str()) {
+                        base_url = mb.to_owned();
+                    }
+                    if let Some(mk) = m.get("apiKey").and_then(|v| v.as_str())
+                        && !mk.is_empty()
+                    {
+                        api_key = Some(mk.to_owned());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    if api_key.is_none()
+        && let Ok(raw) = std::fs::read_to_string(format!("{home}/.pi/agent/auth.json"))
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+        && let Some(a_obj) = val.get(provider)
+    {
+        if let Some(k) = a_obj
+            .get("apiKey")
+            .or_else(|| a_obj.get("access"))
+            .or_else(|| a_obj.get("token"))
+            .and_then(|v| v.as_str())
+            && !k.is_empty()
+        {
+            api_key = Some(k.to_owned());
+        }
+    }
+
+    if base_url.is_empty() && api_key.is_none() {
+        return None;
+    }
+
+    Some(ResolvedProviderEndpoint {
+        api,
+        base_url,
+        api_key,
+    })
 }
 
 impl HttpLlmClient {
@@ -159,10 +235,11 @@ impl HttpLlmClient {
     async fn complete_anthropic(
         &self,
         req: &LlmCompletionRequest,
+        override_base_url: Option<&str>,
+        override_api_key: Option<&str>,
     ) -> anyhow::Result<LlmCompletionResponse> {
-        let api_key = self
-            .anthropic_api_key
-            .as_deref()
+        let api_key = override_api_key
+            .or(self.anthropic_api_key.as_deref())
             .ok_or_else(|| anyhow::anyhow!("ANTHROPIC_API_KEY is not configured"))?;
 
         let mut system_prompts = Vec::new();
@@ -240,7 +317,10 @@ impl HttpLlmClient {
                 });
             }
 
-        let trimmed_base = self.anthropic_base_url.trim_end_matches('/');
+        let trimmed_base = override_base_url
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.anthropic_base_url)
+            .trim_end_matches('/');
         let url = if trimmed_base.ends_with("/v1") {
             format!("{trimmed_base}/messages")
         } else {
@@ -312,10 +392,11 @@ impl HttpLlmClient {
     async fn complete_openai(
         &self,
         req: &LlmCompletionRequest,
+        override_base_url: Option<&str>,
+        override_api_key: Option<&str>,
     ) -> anyhow::Result<LlmCompletionResponse> {
-        let api_key = self
-            .openai_api_key
-            .as_deref()
+        let api_key = override_api_key
+            .or(self.openai_api_key.as_deref())
             .ok_or_else(|| anyhow::anyhow!("OPENAI_API_KEY is not configured"))?;
 
         let mut messages = Vec::new();
@@ -387,10 +468,11 @@ impl HttpLlmClient {
             body["reasoning_effort"] = serde_json::Value::String(effort.to_owned());
         }
 
-        let url = format!(
-            "{}/chat/completions",
-            self.openai_base_url.trim_end_matches('/')
-        );
+        let base = override_base_url
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.openai_base_url)
+            .trim_end_matches('/');
+        let url = format!("{base}/chat/completions");
         let resp = self
             .http
             .post(&url)
@@ -459,10 +541,22 @@ impl LlmClient for HttpLlmClient {
         &self,
         request: &LlmCompletionRequest,
     ) -> anyhow::Result<LlmCompletionResponse> {
-        if request.provider.contains("anthropic") || request.model.starts_with("claude") {
-            self.complete_anthropic(request).await
+        let resolved = resolve_pi_provider_endpoint(&request.provider, &request.model);
+        let override_base = resolved.as_ref().map(|r| r.base_url.as_str());
+        let override_key = resolved.as_ref().and_then(|r| r.api_key.as_deref());
+        let is_openai_api = resolved
+            .as_ref()
+            .is_some_and(|r| r.api.contains("openai") || r.api.contains("completions"));
+
+        if !is_openai_api
+            && (request.provider == "anthropic"
+                || (request.provider != "hub" && request.model.starts_with("claude")))
+        {
+            self.complete_anthropic(request, override_base, override_key)
+                .await
         } else {
-            self.complete_openai(request).await
+            self.complete_openai(request, override_base, override_key)
+                .await
         }
     }
 }

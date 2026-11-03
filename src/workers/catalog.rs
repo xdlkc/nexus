@@ -66,6 +66,141 @@ pub async fn load_pi_models() -> anyhow::Result<Vec<CatalogModel>> {
     Ok(models)
 }
 
+fn push_unique(list: &mut Vec<String>, item: impl Into<String>) {
+    let s = item.into();
+    if !s.is_empty() && !list.contains(&s) {
+        list.push(s);
+    }
+}
+
+/// Loads Pi's full provider -> models map and defaults by combining:
+/// 1. `~/.pi/agent/settings.json` (`defaultProvider`, `defaultModel`, `defaultThinkingLevel`, `enabledModels`)
+/// 2. `~/.pi/agent/models.json` (`providers.<p>.models[].id`)
+/// 3. `pi --list-models` CLI output
+/// 4. `~/.pi/agent/models-store.json` (`<p>.models[].id`)
+fn build_pi_provider_catalog(
+    home: &str,
+    cli_rows: &[CatalogModel],
+) -> (BTreeMap<String, Vec<String>>, String, String, String) {
+    let mut by_provider: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut default_provider = "hub".to_owned();
+    let mut default_model = "glm/glm-5.3".to_owned();
+    let mut default_think = "high".to_owned();
+
+    // 1. Read `~/.pi/agent/models.json` first (highest priority: user-configured custom providers like `hub`, `kimi-coding`)
+    if let Ok(raw) = std::fs::read_to_string(format!("{home}/.pi/agent/models.json"))
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+        && let Some(providers) = val.get("providers").and_then(|v| v.as_object())
+    {
+        for (prov, p_obj) in providers {
+            if let Some(models) = p_obj.get("models").and_then(|v| v.as_array()) {
+                let list = by_provider.entry(prov.clone()).or_default();
+                for m in models {
+                    if let Some(id) = m.get("id").and_then(|v| v.as_str()) {
+                        push_unique(list, id);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Read `~/.pi/agent/settings.json` for defaults and `enabledModels` (prioritize enabled models at top)
+    if let Ok(raw) = std::fs::read_to_string(format!("{home}/.pi/agent/settings.json"))
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+    {
+        if let Some(dp) = val.get("defaultProvider").and_then(|v| v.as_str())
+            && !dp.is_empty()
+        {
+            default_provider = dp.to_owned();
+        }
+        if let Some(dm) = val.get("defaultModel").and_then(|v| v.as_str())
+            && !dm.is_empty()
+        {
+            default_model = dm.to_owned();
+        }
+        if let Some(dt) = val.get("defaultThinkingLevel").and_then(|v| v.as_str())
+            && !dt.is_empty()
+        {
+            default_think = dt.to_owned();
+        }
+        if let Some(enabled) = val.get("enabledModels").and_then(|v| v.as_array()) {
+            for item in enabled {
+                if let Some(full) = item.as_str()
+                    && let Some((prov, model)) = full.split_once('/')
+                {
+                    let list = by_provider.entry(prov.to_owned()).or_default();
+                    push_unique(list, model);
+                }
+            }
+        }
+    }
+
+    // 3. Merge `pi --list-models` rows
+    for row in cli_rows {
+        let list = by_provider.entry(row.provider.clone()).or_default();
+        push_unique(list, &row.model);
+    }
+
+    // 4. Merge `~/.pi/agent/models-store.json`
+    if let Ok(raw) = std::fs::read_to_string(format!("{home}/.pi/agent/models-store.json"))
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+        && let Some(obj) = val.as_object()
+    {
+        for (prov, p_obj) in obj {
+            if let Some(models) = p_obj.get("models").and_then(|v| v.as_array()) {
+                let list = by_provider.entry(prov.clone()).or_default();
+                for m in models {
+                    if let Some(id) = m.get("id").and_then(|v| v.as_str()) {
+                        push_unique(list, id);
+                    }
+                }
+            }
+        }
+    }
+
+    // Ensure fallback if empty
+    if by_provider.is_empty() {
+        by_provider.insert(
+            "anthropic".to_owned(),
+            vec![
+                "claude-sonnet-4-6".to_owned(),
+                "claude-opus-4-6".to_owned(),
+                "claude-haiku-4-5".to_owned(),
+            ],
+        );
+        by_provider.insert(
+            "openai".to_owned(),
+            vec![
+                "gpt-6-astra".to_owned(),
+                "gpt-6.1-sol".to_owned(),
+                "gpt-5.6-sol".to_owned(),
+            ],
+        );
+    }
+
+    if !by_provider.contains_key(&default_provider) {
+        default_provider = if by_provider.contains_key("hub") {
+            "hub".to_owned()
+        } else {
+            by_provider
+                .keys()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "openai".to_owned())
+        };
+    }
+
+    if let Some(models) = by_provider.get_mut(&default_provider) {
+        if !models.contains(&default_model) {
+            if let Some(first) = models.first().cloned() {
+                default_model = first;
+            }
+        }
+    }
+
+    (by_provider, default_provider, default_model, default_think)
+}
+
 /// Probes all 5 Harnesses (`codex`, `claude-code`, `pi-rpc`, `pi-native`, `opencode`) from host CLI configs.
 pub async fn load_all_harness_catalogs() -> (Vec<CatalogModel>, BTreeMap<String, HarnessCatalog>) {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -74,26 +209,21 @@ pub async fn load_all_harness_catalogs() -> (Vec<CatalogModel>, BTreeMap<String,
         "{home}/.local/bin:{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:{cur_path}"
     );
 
-    let pi_rows = load_pi_models().await.unwrap_or_default();
-    let mut pi_by_provider: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for row in &pi_rows {
-        pi_by_provider
-            .entry(row.provider.clone())
-            .or_default()
-            .push(row.model.clone());
+    let pi_cli_rows = load_pi_models().await.unwrap_or_default();
+    let (pi_providers, pi_def_prov, pi_def_model, pi_def_think) =
+        build_pi_provider_catalog(&home, &pi_cli_rows);
+
+    let mut all_catalog_rows = BTreeSet::new();
+    for (prov, models) in &pi_providers {
+        for m in models {
+            all_catalog_rows.insert(CatalogModel {
+                provider: prov.clone(),
+                model: m.clone(),
+            });
+        }
     }
 
-    let openai_models = pi_by_provider.get("openai").cloned().unwrap_or_else(|| {
-        vec![
-            "gpt-6-astra".to_owned(),
-            "gpt-6.1-sol".to_owned(),
-            "gpt-5.6-sol".to_owned(),
-            "gpt-5.3-codex".to_owned(),
-            "o3-pro".to_owned(),
-        ]
-    });
-
-    // 1. Codex (`~/.codex/config.toml`)
+    // 1. Codex (`~/.codex/config.toml` + `~/.codex/models_cache.json`)
     let mut codex_default_model = "gpt-6-astra".to_owned();
     let mut codex_default_think = "high".to_owned();
     if let Ok(raw) = std::fs::read_to_string(format!("{home}/.codex/config.toml")) {
@@ -112,9 +242,34 @@ pub async fn load_all_harness_catalogs() -> (Vec<CatalogModel>, BTreeMap<String,
             }
         }
     }
-    let mut codex_models = openai_models.clone();
-    if !codex_models.contains(&codex_default_model) {
-        codex_models.insert(0, codex_default_model.clone());
+    let mut codex_models = Vec::new();
+    push_unique(&mut codex_models, &codex_default_model);
+    if let Ok(raw) = std::fs::read_to_string(format!("{home}/.codex/models_cache.json"))
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+        && let Some(arr) = val.get("models").and_then(|v| v.as_array())
+    {
+        for m in arr {
+            if let Some(slug) = m
+                .get("slug")
+                .or_else(|| m.get("id"))
+                .and_then(|v| v.as_str())
+            {
+                push_unique(&mut codex_models, slug);
+            }
+        }
+    }
+    if let Some(openai_list) = pi_providers.get("openai") {
+        for m in openai_list {
+            push_unique(&mut codex_models, m);
+        }
+    }
+    if codex_models.is_empty() {
+        codex_models = vec![
+            "gpt-6-astra".to_owned(),
+            "gpt-6.1-sol".to_owned(),
+            "gpt-5.6-sol".to_owned(),
+            "gpt-5.3-codex".to_owned(),
+        ];
     }
     let codex_catalog = HarnessCatalog {
         default_provider: "openai".to_owned(),
@@ -155,20 +310,26 @@ pub async fn load_all_harness_catalogs() -> (Vec<CatalogModel>, BTreeMap<String,
                         .and_then(|l| l.split_once('/').map(|(p, _)| p.to_owned()))
                         .unwrap_or_else(|| "hub".to_owned());
                     let list = claude_providers.entry(prov).or_default();
-                    if !list.contains(&m.to_owned()) {
-                        list.push(m.to_owned());
-                    }
+                    push_unique(list, m);
                 }
             }
         }
     }
-    claude_providers.entry("anthropic".to_owned()).or_insert_with(|| {
-        vec![
-            "claude-sonnet-4-6".to_owned(),
-            "claude-opus-4-6".to_owned(),
-            "claude-haiku-4-5".to_owned(),
-        ]
-    });
+    let anthropic_list = claude_providers.entry("anthropic".to_owned()).or_default();
+    for m in [
+        "claude-sonnet-4-6",
+        "claude-opus-4-6",
+        "claude-haiku-4-5",
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+    ] {
+        push_unique(anthropic_list, m);
+    }
+    if let Some(pi_anth) = pi_providers.get("anthropic") {
+        for m in pi_anth {
+            push_unique(anthropic_list, m);
+        }
+    }
     let claude_catalog = HarnessCatalog {
         default_provider: claude_default_provider,
         default_model: claude_default_model,
@@ -182,24 +343,11 @@ pub async fn load_all_harness_catalogs() -> (Vec<CatalogModel>, BTreeMap<String,
         providers: claude_providers,
     };
 
-    // 3. Pi RPC (`pi --list-models`)
-    let mut pi_rpc_providers = pi_by_provider.clone();
-    if pi_rpc_providers.is_empty() {
-        pi_rpc_providers.insert("openai".to_owned(), openai_models.clone());
-    }
-    let pi_rpc_def_prov = if pi_rpc_providers.contains_key("hub") {
-        "hub".to_owned()
-    } else {
-        pi_rpc_providers.keys().next().cloned().unwrap_or_else(|| "openai".to_owned())
-    };
-    let pi_rpc_def_model = pi_rpc_providers
-        .get(&pi_rpc_def_prov)
-        .and_then(|m| m.first().cloned())
-        .unwrap_or_else(|| "gpt-6-astra".to_owned());
+    // 3. Pi RPC (`~/.pi/agent/models.json` + `~/.pi/agent/settings.json` + `pi --list-models`)
     let pi_rpc_catalog = HarnessCatalog {
-        default_provider: pi_rpc_def_prov,
-        default_model: pi_rpc_def_model,
-        default_think_effort: "medium".to_owned(),
+        default_provider: pi_def_prov.clone(),
+        default_model: pi_def_model.clone(),
+        default_think_effort: pi_def_think.clone(),
         think_efforts: vec![
             "off".to_owned(),
             "minimal".to_owned(),
@@ -208,25 +356,15 @@ pub async fn load_all_harness_catalogs() -> (Vec<CatalogModel>, BTreeMap<String,
             "high".to_owned(),
             "xhigh".to_owned(),
         ],
-        providers: pi_rpc_providers,
+        providers: pi_providers.clone(),
     };
 
-    // 4. Pi Native (Direct Anthropic & OpenAI HTTP)
-    let pi_native_providers = BTreeMap::from([
-        (
-            "anthropic".to_owned(),
-            vec![
-                "claude-sonnet-4-6".to_owned(),
-                "claude-opus-4-6".to_owned(),
-                "claude-haiku-4-5".to_owned(),
-            ],
-        ),
-        ("openai".to_owned(), openai_models.clone()),
-    ]);
+    // 4. Pi Native (Shares the full Pi provider & model ecosystem from `~/.pi/agent/models.json` + `settings.json`,
+    //    including `hub`, `kimi-coding`, `anthropic`, `openai`, `xai`)
     let pi_native_catalog = HarnessCatalog {
-        default_provider: "anthropic".to_owned(),
-        default_model: "claude-sonnet-4-6".to_owned(),
-        default_think_effort: "medium".to_owned(),
+        default_provider: pi_def_prov,
+        default_model: pi_def_model,
+        default_think_effort: pi_def_think,
         think_efforts: vec![
             "minimal".to_owned(),
             "low".to_owned(),
@@ -234,11 +372,34 @@ pub async fn load_all_harness_catalogs() -> (Vec<CatalogModel>, BTreeMap<String,
             "high".to_owned(),
             "xhigh".to_owned(),
         ],
-        providers: pi_native_providers,
+        providers: pi_providers,
     };
 
-    // 5. OpenCode (`opencode models`)
+    // 5. OpenCode (`~/.config/opencode/opencode.json` + `opencode models`)
     let mut opencode_providers: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut oc_def_prov = String::new();
+    let mut oc_def_model = String::new();
+    if let Ok(raw) = std::fs::read_to_string(format!("{home}/.config/opencode/opencode.json"))
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+    {
+        if let Some(m) = val.get("model").and_then(|v| v.as_str())
+            && let Some((prov, model)) = m.split_once('/')
+        {
+            oc_def_prov = prov.to_owned();
+            oc_def_model = model.to_owned();
+        }
+        if let Some(provs) = val.get("providers").and_then(|v| v.as_object()) {
+            for (prov, p_obj) in provs {
+                if let Some(models_obj) = p_obj.get("models").and_then(|v| v.as_object()) {
+                    let list = opencode_providers.entry(prov.clone()).or_default();
+                    for model_key in models_obj.keys() {
+                        push_unique(list, model_key);
+                    }
+                }
+            }
+        }
+    }
+
     let mut oc_cmd = tokio::process::Command::new("opencode");
     oc_cmd
         .arg("models")
@@ -255,24 +416,32 @@ pub async fn load_all_harness_catalogs() -> (Vec<CatalogModel>, BTreeMap<String,
                 && !model.is_empty()
             {
                 let list = opencode_providers.entry(prov.to_owned()).or_default();
-                if !list.contains(&model.to_owned()) {
-                    list.push(model.to_owned());
-                }
+                push_unique(list, model);
             }
         }
     }
     if opencode_providers.is_empty() {
         opencode_providers = pi_rpc_catalog.providers.clone();
     }
-    let oc_def_prov = if opencode_providers.contains_key("anthropic") {
-        "anthropic".to_owned()
-    } else {
-        opencode_providers.keys().next().cloned().unwrap_or_else(|| "openai".to_owned())
-    };
-    let oc_def_model = opencode_providers
-        .get(&oc_def_prov)
-        .and_then(|m| m.first().cloned())
-        .unwrap_or_else(|| "claude-sonnet-4-6".to_owned());
+    if oc_def_prov.is_empty() || !opencode_providers.contains_key(&oc_def_prov) {
+        oc_def_prov = if opencode_providers.contains_key("hub") {
+            "hub".to_owned()
+        } else if opencode_providers.contains_key("anthropic") {
+            "anthropic".to_owned()
+        } else {
+            opencode_providers
+                .keys()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "openai".to_owned())
+        };
+    }
+    if oc_def_model.is_empty() {
+        oc_def_model = opencode_providers
+            .get(&oc_def_prov)
+            .and_then(|m| m.first().cloned())
+            .unwrap_or_else(|| "glm/glm-5.3".to_owned());
+    }
     let opencode_catalog = HarnessCatalog {
         default_provider: oc_def_prov,
         default_model: oc_def_model,
@@ -289,7 +458,7 @@ pub async fn load_all_harness_catalogs() -> (Vec<CatalogModel>, BTreeMap<String,
         ("opencode".to_owned(), opencode_catalog),
     ]);
 
-    (pi_rows, harnesses)
+    (all_catalog_rows.into_iter().collect(), harnesses)
 }
 
 #[cfg(test)]

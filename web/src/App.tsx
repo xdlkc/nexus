@@ -49,6 +49,7 @@ import type {
 } from './types/nexus';
 import { StepTimelineItem } from './components/StepBadge';
 import { IdentityMatrix } from './components/IdentityMatrix';
+import { SearchableSelect } from './components/SearchableSelect';
 
 type ActiveTab = 'tickets' | 'trajectory' | 'conversation' | 'decisions' | 'memory' | 'settings' | 'toolchain';
 
@@ -807,17 +808,18 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <select
+                    <SearchableSelect
                       value={selectedTraceTicketId}
-                      onChange={(e) => setSelectedTraceTicketId(e.target.value)}
-                      className="px-3 py-2 rounded-xl bg-[#070a10] border border-slate-800 text-xs text-slate-100 min-w-[300px]"
-                    >
-                      {tickets.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.id} · [{t.repo || 'nexus'}] {t.title.slice(0, 48)}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setSelectedTraceTicketId(val)}
+                      options={tickets.map((t) => ({
+                        value: t.id,
+                        label: `${t.id} · [${t.repo || 'nexus'}] ${t.title.slice(0, 48)}`,
+                        badge: t.status,
+                      }))}
+                      searchPlaceholder="搜索工单号、仓库或标题..."
+                      allowCustom={false}
+                      className="min-w-[340px]"
+                    />
 
                     <button
                       type="button"
@@ -1157,163 +1159,202 @@ export default function App() {
                       defThink,
                       harnessCatalogs
                     );
+                    const routerOpts = getEngineCatalogOptions(
+                      'pi-native',
+                      routerProvider,
+                      routerModel,
+                      routerThink,
+                      harnessCatalogs
+                    );
                     return (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-                        <FormField label="默认 Harness 驱动器">
-                          <select
-                            value={defHarness}
-                            onChange={(e) => {
-                              const nextH = e.target.value as HarnessKind;
-                              setDefHarness(nextH);
-                              const nextOpts = getEngineCatalogOptions(
-                                nextH,
-                                defProvider,
-                                defModel,
-                                defThink,
-                                harnessCatalogs,
-                                true
-                              );
-                              setDefProvider(nextOpts.recommendedProvider);
-                              setDefModel(nextOpts.recommendedModel);
-                              setDefThink(nextOpts.recommendedThink);
-                              setCfgDirty(true);
-                            }}
-                            className="form-input"
-                          >
-                            <option value="codex">codex (OpenAI Codex CLI)</option>
-                            <option value="claude-code">claude-code (Claude Code CLI)</option>
-                            <option value="pi-native">pi-native (内置原生 ReAct)</option>
-                            <option value="pi-rpc">pi-rpc (Pi Agent RPC)</option>
-                            <option value="opencode">opencode (OpenCode CLI)</option>
-                          </select>
-                        </FormField>
+                      <>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                          <FormField label="默认 Harness 驱动器">
+                            <SearchableSelect
+                              value={defHarness}
+                              onChange={(val) => {
+                                const nextH = val as HarnessKind;
+                                setDefHarness(nextH);
+                                const nextOpts = getEngineCatalogOptions(
+                                  nextH,
+                                  defProvider,
+                                  defModel,
+                                  defThink,
+                                  harnessCatalogs,
+                                  true
+                                );
+                                setDefProvider(nextOpts.recommendedProvider);
+                                setDefModel(nextOpts.recommendedModel);
+                                setDefThink(nextOpts.recommendedThink);
+                                setCfgDirty(true);
+                              }}
+                              options={[
+                                { value: 'codex', label: 'codex (OpenAI Codex CLI)' },
+                                { value: 'claude-code', label: 'claude-code (Claude Code CLI)' },
+                                { value: 'pi-native', label: 'pi-native (内置原生 ReAct)' },
+                                { value: 'pi-rpc', label: 'pi-rpc (Pi Agent RPC)' },
+                                { value: 'opencode', label: 'opencode (OpenCode CLI)' },
+                              ]}
+                              searchPlaceholder="筛选 Harness..."
+                              allowCustom={false}
+                            />
+                          </FormField>
 
-                        <FormField label={`默认 Provider (跟随 ${defHarness})`}>
-                          <select
-                            value={defProvider}
-                            onChange={(e) => {
-                              const nextP = e.target.value;
-                              setDefProvider(nextP);
-                              const nextOpts = getEngineCatalogOptions(
-                                defHarness,
-                                nextP,
-                                defModel,
-                                defThink,
-                                harnessCatalogs,
-                                false,
-                                true
-                              );
-                              setDefModel(nextOpts.recommendedModel);
-                              setCfgDirty(true);
-                            }}
-                            className="form-input"
-                          >
-                            {providers.map((p) => (
-                              <option key={p} value={p}>
-                                {p}
-                              </option>
-                            ))}
-                          </select>
-                        </FormField>
+                          <FormField label={`默认 Provider (跟随 ${defHarness} · 支持筛选)`}>
+                            <SearchableSelect
+                              value={defProvider}
+                              onChange={(nextP) => {
+                                setDefProvider(nextP);
+                                const nextOpts = getEngineCatalogOptions(
+                                  defHarness,
+                                  nextP,
+                                  defModel,
+                                  defThink,
+                                  harnessCatalogs,
+                                  false,
+                                  true
+                                );
+                                setDefModel(nextOpts.recommendedModel);
+                                setCfgDirty(true);
+                              }}
+                              options={providers.map((p) => ({
+                                value: p,
+                                label: p,
+                                badge: `${(harnessCatalogs[defHarness]?.providers?.[p] || []).length || ''} 模型`,
+                              }))}
+                              searchPlaceholder={`在 ${defHarness} 的 Provider 中筛选...`}
+                            />
+                          </FormField>
 
-                        <FormField label={`默认 Model (跟随 ${defHarness}/${defProvider})`}>
-                          <select
-                            value={defModel}
-                            onChange={(e) => {
-                              setDefModel(e.target.value);
-                              setCfgDirty(true);
-                            }}
-                            className="form-input"
-                          >
-                            {models.map((m) => (
-                              <option key={m} value={m}>
-                                {m}
-                              </option>
-                            ))}
-                          </select>
-                        </FormField>
+                          <FormField label={`默认 Model (跟随 ${defHarness}/${defProvider} · 支持筛选)`}>
+                            <SearchableSelect
+                              value={defModel}
+                              onChange={(nextM) => {
+                                setDefModel(nextM);
+                                setCfgDirty(true);
+                              }}
+                              options={models}
+                              searchPlaceholder={`输入关键字筛选 ${defProvider} 下的模型...`}
+                            />
+                          </FormField>
 
-                        <FormField label={`默认思考程度 (跟随 ${defHarness})`}>
-                          <select
-                            value={defThink}
-                            onChange={(e) => {
-                              setDefThink(e.target.value as ThinkEffort);
-                              setCfgDirty(true);
-                            }}
-                            className="form-input"
-                          >
-                            {thinkEfforts.map((te) => (
-                              <option key={te} value={te}>
-                                {formatThinkLabel(defHarness, te)}
-                              </option>
-                            ))}
-                          </select>
-                        </FormField>
-                      </div>
+                          <FormField label={`默认思考程度 (跟随 ${defHarness})`}>
+                            <SearchableSelect
+                              value={defThink}
+                              onChange={(nextT) => {
+                                setDefThink(nextT as ThinkEffort);
+                                setCfgDirty(true);
+                              }}
+                              options={thinkEfforts.map((te) => ({
+                                value: te,
+                                label: formatThinkLabel(defHarness, te),
+                              }))}
+                              searchPlaceholder="筛选思考程度..."
+                              allowCustom={false}
+                            />
+                          </FormField>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-4">
+                          <FormField label="Jev 运行协议 (`jev.protocol`)">
+                            <SearchableSelect
+                              value={jevMode}
+                              onChange={(val) => {
+                                setJevMode(val);
+                                setCfgDirty(true);
+                              }}
+                              options={[
+                                { value: 'heuristic', label: '本地启发式规则分诊 (零延迟)' },
+                                { value: 'typesafe-system-one', label: '远端 TypeSafe System-One' },
+                                { value: 'openrouter-system-one', label: '远端 OpenRouter System-One' },
+                                { value: 'openai-decisions', label: '远端 OpenAI Decisions' },
+                              ]}
+                              allowCustom={false}
+                            />
+                          </FormField>
+
+                          <FormField label="Jev 接口地址 (`jev.base_url`)">
+                            <input
+                              type="text"
+                              value={jevBaseUrl}
+                              onChange={(e) => {
+                                setJevBaseUrl(e.target.value);
+                                setCfgDirty(true);
+                              }}
+                              placeholder="https://api.typesafe.ai/v1"
+                              className="form-input"
+                            />
+                          </FormField>
+
+                          <FormField label="Jev 模型 (`jev.model`)">
+                            <SearchableSelect
+                              value={jevModel}
+                              onChange={(val) => {
+                                setJevModel(val);
+                                setCfgDirty(true);
+                              }}
+                              options={[
+                                { value: 'jev-1', label: 'jev-1 (TypeSafe 官方分诊模型)' },
+                                { value: 'typesafe/jev-1', label: 'typesafe/jev-1 (OpenRouter)' },
+                                { value: 'gpt-4o-mini', label: 'gpt-4o-mini (OpenAI Decisions)' },
+                                { value: 'heuristic-jev-v1', label: 'heuristic-jev-v1 (本地规则)' },
+                              ]}
+                            />
+                          </FormField>
+
+                          <FormField label="Tier-2 Router Provider">
+                            <SearchableSelect
+                              value={routerProvider}
+                              onChange={(nextP) => {
+                                setRouterProvider(nextP);
+                                const nextR = getEngineCatalogOptions(
+                                  'pi-native',
+                                  nextP,
+                                  routerModel,
+                                  routerThink,
+                                  harnessCatalogs,
+                                  false,
+                                  true
+                                );
+                                setRouterModel(nextR.recommendedModel);
+                                setCfgDirty(true);
+                              }}
+                              options={routerOpts.providers}
+                              searchPlaceholder="筛选 Router Provider (如 hub)..."
+                            />
+                          </FormField>
+
+                          <FormField label={`Tier-2 Router Model (${routerProvider})`}>
+                            <SearchableSelect
+                              value={routerModel}
+                              onChange={(nextM) => {
+                                setRouterModel(nextM);
+                                setCfgDirty(true);
+                              }}
+                              options={routerOpts.models}
+                              searchPlaceholder={`筛选 ${routerProvider} 下的模型...`}
+                            />
+                          </FormField>
+
+                          <FormField label="Tier-2 Router 思考程度">
+                            <SearchableSelect
+                              value={routerThink}
+                              onChange={(val) => {
+                                setRouterThink(val as ThinkEffort);
+                                setCfgDirty(true);
+                              }}
+                              options={[
+                                { value: 'low', label: 'low (轻量推理)' },
+                                { value: 'medium', label: 'medium (标准推理)' },
+                                { value: 'high', label: 'high (深度推理)' },
+                              ]}
+                              allowCustom={false}
+                            />
+                          </FormField>
+                        </div>
+                      </>
                     );
                   })()}
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-                    <FormField label="Jev 运行协议 (`jev.protocol`)">
-                      <select
-                        value={jevMode}
-                        onChange={(e) => {
-                          setJevMode(e.target.value);
-                          setCfgDirty(true);
-                        }}
-                        className="form-input"
-                      >
-                        <option value="heuristic">本地启发式规则分诊 (零延迟)</option>
-                        <option value="typesafe-system-one">远端 TypeSafe System-One</option>
-                        <option value="openrouter-system-one">远端 OpenRouter System-One</option>
-                        <option value="openai-decisions">远端 OpenAI Decisions</option>
-                      </select>
-                    </FormField>
-
-                    <FormField label="Jev 接口地址 (`jev.base_url`)">
-                      <input
-                        type="text"
-                        value={jevBaseUrl}
-                        onChange={(e) => {
-                          setJevBaseUrl(e.target.value);
-                          setCfgDirty(true);
-                        }}
-                        placeholder="https://api.typesafe.ai/v1"
-                        className="form-input"
-                      />
-                    </FormField>
-
-                    <FormField label="Jev 模型 (`jev.model`)">
-                      <select
-                        value={jevModel}
-                        onChange={(e) => {
-                          setJevModel(e.target.value);
-                          setCfgDirty(true);
-                        }}
-                        className="form-input"
-                      >
-                        <option value="jev-1">jev-1 (TypeSafe 官方分诊模型)</option>
-                        <option value="typesafe/jev-1">typesafe/jev-1 (OpenRouter)</option>
-                        <option value="gpt-4o-mini">gpt-4o-mini (OpenAI Decisions)</option>
-                        <option value="heuristic-jev-v1">heuristic-jev-v1 (本地规则)</option>
-                      </select>
-                    </FormField>
-
-                    <FormField label="Tier-2 Router 思考程度 (`router_llm.think_effort`)">
-                      <select
-                        value={routerThink}
-                        onChange={(e) => {
-                          setRouterThink(e.target.value as ThinkEffort);
-                          setCfgDirty(true);
-                        }}
-                        className="form-input"
-                      >
-                        <option value="low">low</option>
-                        <option value="medium">medium</option>
-                        <option value="high">high</option>
-                      </select>
-                    </FormField>
-                  </div>
                 </div>
               </div>
             </div>
@@ -1448,10 +1489,10 @@ export default function App() {
               return (
                 <div className="space-y-3 text-xs">
                   <FormField label="目标 Harness">
-                    <select
+                    <SearchableSelect
                       value={switchHarness}
-                      onChange={(e) => {
-                        const nextH = e.target.value as HarnessKind;
+                      onChange={(val) => {
+                        const nextH = val as HarnessKind;
                         setSwitchHarness(nextH);
                         const nextOpts = getEngineCatalogOptions(
                           nextH,
@@ -1465,20 +1506,20 @@ export default function App() {
                         setSwitchModel(nextOpts.recommendedModel);
                         setSwitchThink(nextOpts.recommendedThink);
                       }}
-                      className="form-input"
-                    >
-                      <option value="codex">codex (OpenAI Codex CLI)</option>
-                      <option value="claude-code">claude-code (Claude Code CLI)</option>
-                      <option value="pi-native">pi-native (内置原生 ReAct)</option>
-                      <option value="pi-rpc">pi-rpc (Pi Agent RPC)</option>
-                      <option value="opencode">opencode (OpenCode CLI)</option>
-                    </select>
+                      options={[
+                        { value: 'codex', label: 'codex (OpenAI Codex CLI)' },
+                        { value: 'claude-code', label: 'claude-code (Claude Code CLI)' },
+                        { value: 'pi-native', label: 'pi-native (内置原生 ReAct)' },
+                        { value: 'pi-rpc', label: 'pi-rpc (Pi Agent RPC)' },
+                        { value: 'opencode', label: 'opencode (OpenCode CLI)' },
+                      ]}
+                      allowCustom={false}
+                    />
                   </FormField>
-                  <FormField label={`Provider (跟随 ${switchHarness})`}>
-                    <select
+                  <FormField label={`Provider (跟随 ${switchHarness} · 支持筛选)`}>
+                    <SearchableSelect
                       value={switchProvider}
-                      onChange={(e) => {
-                        const nextP = e.target.value;
+                      onChange={(nextP) => {
                         setSwitchProvider(nextP);
                         const nextOpts = getEngineCatalogOptions(
                           switchHarness,
@@ -1491,40 +1532,28 @@ export default function App() {
                         );
                         setSwitchModel(nextOpts.recommendedModel);
                       }}
-                      className="form-input"
-                    >
-                      {providers.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
+                      options={providers}
+                      searchPlaceholder={`筛选 ${switchHarness} 的 Provider...`}
+                    />
                   </FormField>
-                  <FormField label={`Model (跟随 ${switchHarness}/${switchProvider})`}>
-                    <select
+                  <FormField label={`Model (跟随 ${switchHarness}/${switchProvider} · 支持筛选)`}>
+                    <SearchableSelect
                       value={switchModel}
-                      onChange={(e) => setSwitchModel(e.target.value)}
-                      className="form-input"
-                    >
-                      {models.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(nextM) => setSwitchModel(nextM)}
+                      options={models}
+                      searchPlaceholder={`输入关键字筛选 ${switchProvider} 模型...`}
+                    />
                   </FormField>
                   <FormField label={`思考程度 (跟随 ${switchHarness})`}>
-                    <select
+                    <SearchableSelect
                       value={switchThink}
-                      onChange={(e) => setSwitchThink(e.target.value as ThinkEffort)}
-                      className="form-input"
-                    >
-                      {thinkEfforts.map((te) => (
-                        <option key={te} value={te}>
-                          {formatThinkLabel(switchHarness, te)}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(nextT) => setSwitchThink(nextT as ThinkEffort)}
+                      options={thinkEfforts.map((te) => ({
+                        value: te,
+                        label: formatThinkLabel(switchHarness, te),
+                      }))}
+                      allowCustom={false}
+                    />
                   </FormField>
                   <FormField label="切换原因 (写入 Handoff 卡片)">
                     <input
@@ -1644,6 +1673,25 @@ const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({
   </div>
 );
 
+const HUB_DEFAULT_MODELS = [
+  'glm/glm-5.3',
+  'glm/glm-5.3-flash',
+  'glm/glm-5.3-flashx',
+  'deepseek/deepseek-flash',
+  'deepseek/deepseek-v4-pro',
+  'kimi/k3.1-pro',
+  'kimi/k3.1-pro-highspeed',
+  'longcat/LongCat-2.5',
+  'minimax/MiniMax-M3.1-Flash',
+  'zenmux/anthropic/claude-sonnet-5.5',
+  'zenmux/anthropic/claude-opus-5.5',
+  'zenmux/anthropic/claude-haiku-5.5',
+  'zenmux/meta/muse-wonder-1.0',
+  'zenmux/inclusionai/ling-3.1-flash',
+  'zenmux/xiaomi/mimo-v2.6-flash',
+  'zenmux/xiaomi/mimo-v2.6-pro',
+];
+
 const FALLBACK_HARNESS_CATALOGS: Record<string, HarnessCatalog> = {
   codex: {
     default_provider: 'openai',
@@ -1651,7 +1699,7 @@ const FALLBACK_HARNESS_CATALOGS: Record<string, HarnessCatalog> = {
     default_think_effort: 'high',
     think_efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
     providers: {
-      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-5.3-codex', 'o3-pro'],
+      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.3-codex', 'o3-pro'],
     },
   },
   'claude-code': {
@@ -1660,47 +1708,45 @@ const FALLBACK_HARNESS_CATALOGS: Record<string, HarnessCatalog> = {
     default_think_effort: 'high',
     think_efforts: ['low', 'medium', 'high', 'xhigh'],
     providers: {
-      hub: [
-        'zenmux/anthropic/claude-sonnet-5.5',
-        'zenmux/anthropic/claude-opus-5.5',
-        'zenmux/anthropic/claude-haiku-5.5',
-        'deepseek/deepseek-v4-pro',
-        'glm/glm-5.3',
-        'kimi/k3.1-pro',
-      ],
+      hub: HUB_DEFAULT_MODELS,
       anthropic: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5'],
     },
   },
   'pi-rpc': {
     default_provider: 'hub',
-    default_model: 'zenmux/anthropic/claude-sonnet-5.5',
-    default_think_effort: 'medium',
+    default_model: 'glm/glm-5.3',
+    default_think_effort: 'high',
     think_efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
     providers: {
-      hub: ['zenmux/anthropic/claude-sonnet-5.5', 'deepseek/deepseek-v4-pro', 'glm/glm-5.3', 'kimi/k3.1-pro'],
-      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol'],
+      hub: HUB_DEFAULT_MODELS,
+      'kimi-coding': ['k3.1-pro', 'k3.1-pro-highspeed'],
+      anthropic: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5', 'claude-sonnet-5-5', 'claude-opus-5-5'],
+      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-sol'],
       xai: ['grok-4.7', 'grok-4.6'],
     },
   },
   'pi-native': {
-    default_provider: 'anthropic',
-    default_model: 'claude-sonnet-4-6',
-    default_think_effort: 'medium',
+    default_provider: 'hub',
+    default_model: 'glm/glm-5.3',
+    default_think_effort: 'high',
     think_efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
     providers: {
-      anthropic: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5'],
-      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol'],
+      hub: HUB_DEFAULT_MODELS,
+      'kimi-coding': ['k3.1-pro', 'k3.1-pro-highspeed'],
+      anthropic: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5', 'claude-sonnet-5-5', 'claude-opus-5-5'],
+      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-sol'],
+      xai: ['grok-4.7', 'grok-4.6'],
     },
   },
   opencode: {
-    default_provider: 'anthropic',
-    default_model: 'claude-sonnet-5-5',
+    default_provider: 'hub',
+    default_model: 'glm/glm-5.3',
     default_think_effort: 'medium',
     think_efforts: ['low', 'medium', 'high'],
     providers: {
+      hub: HUB_DEFAULT_MODELS,
       anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-sonnet-4-6', 'claude-opus-4-6'],
-      hub: ['zenmux/anthropic/claude-sonnet-5.5', 'deepseek/deepseek-v4-pro', 'glm/glm-5.3'],
-      openai: ['gpt-6-astra', 'gpt-6.1-sol'],
+      openai: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-luna'],
     },
   },
 };
