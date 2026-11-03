@@ -1,0 +1,11 @@
+/target/
+.artifacts/
+.nexus/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
