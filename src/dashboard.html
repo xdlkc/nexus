@@ -1025,8 +1025,18 @@
             ? escapeHtml(report.summary)
             : (t.delivery_error ? `<span style="color:var(--danger)">${escapeHtml(t.delivery_error)}</span>` : '<span style="color:var(--text-muted)">等待执行结果...</span>');
           const prLink = report.pull_request_url
-            ? `<div style="margin-top:0.25rem"><a href="${escapeHtml(report.pull_request_url)}" target="_blank" style="color:var(--accent)">查看 PR ↗</a></div>`
+            ? `<div style="margin-top:0.35rem"><a href="${escapeHtml(report.pull_request_url)}" target="_blank" class="badge badge-purple" style="text-decoration:none">🔀 关联 PR: ${escapeHtml(report.pull_request_url.replace('https://github.com/', ''))} ↗</a></div>`
             : '';
+          const followsBadges = (t.follows || []).map(f => {
+            const st = f.closed ? ` (${escapeHtml(f.closed.outcome)})` : ' (自动跟踪中)';
+            return `<span class="badge badge-blue" style="margin-right:0.3rem;margin-top:0.25rem">🔗 跟踪 ${escapeHtml(f.thread_key)}${st}</span>`;
+          }).join('');
+          const originKey = t.origin_thread_key || '';
+          const sourceBadge = originKey.startsWith('github:pr:')
+            ? '<span class="badge badge-purple">🔀 GitHub PR</span>'
+            : (originKey.startsWith('github:issue:')
+              ? '<span class="badge badge-amber">🐙 GitHub Issue</span>'
+              : '<span class="badge badge-blue">💬 飞书群聊</span>');
           const isExpanded = expandedInlineTicketId === t.id;
           const cachedSteps = inlineTraceCache[t.id] || [];
           const inlineTraceRow = isExpanded
@@ -1052,7 +1062,7 @@
             : '';
           return `<tr>
             <td><code>${escapeHtml(t.id)}</code><div style="font-size:0.74rem;color:var(--text-muted);margin-top:0.2rem">${escapeHtml(t.short_name)}</div></td>
-            <td><strong>${escapeHtml(t.title)}</strong><div style="font-size:0.76rem;color:var(--text-muted)">${escapeHtml(t.repo || 'default')}</div></td>
+            <td><strong>${escapeHtml(t.title)}</strong><div style="font-size:0.76rem;color:var(--text-muted);margin-top:0.25rem">${sourceBadge} · 📦 <code>${escapeHtml(t.repo || 'xdlkc/nexus')}</code></div>${followsBadges ? `<div>${followsBadges}</div>` : ''}</td>
             <td>${stageBadge}</td>
             <td><code>${escapeHtml(target.harness || '-')}:${escapeHtml(target.provider || '-')}/${escapeHtml(target.model || '-')}:${escapeHtml(target.think_effort || '-')}</code></td>
             <td style="max-width:380px; white-space:pre-wrap">${summaryText}${prLink}</td>

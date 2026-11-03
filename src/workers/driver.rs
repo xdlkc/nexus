@@ -1055,14 +1055,49 @@ pub async fn run_cli_harness_worker(
         },
     );
 
+    let (pull_request_thread_key, pull_request_url) = extract_github_pr_reference(&summary)
+        .or_else(|| extract_github_pr_reference(&stdout))
+        .map(|(k, u)| (Some(k), Some(u)))
+        .unwrap_or((None, None));
+
     Ok(WorkerExecutionResult {
         status,
         summary,
         question: None,
-        pull_request_thread_key: None,
-        pull_request_url: None,
+        pull_request_thread_key,
+        pull_request_url,
         raw_output: if stdout.is_empty() { stderr } else { stdout },
     })
+}
+
+/// Extracts `("github:pr:<owner>/<repo>#<num>", "https://github.com/<owner>/<repo>/pull/<num>")`
+/// if `text` contains a GitHub Pull Request URL.
+pub fn extract_github_pr_reference(text: &str) -> Option<(String, String)> {
+    let marker = "https://github.com/";
+    let mut rest = text;
+    while let Some(idx) = rest.find(marker) {
+        let after = &rest[idx + marker.len()..];
+        let end = after
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '\'' | '`' | '，' | '。')
+            })
+            .unwrap_or(after.len());
+        let path = &after[..end];
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() >= 4
+            && parts[2] == "pull"
+            && let Ok(num) = parts[3].parse::<u64>()
+        {
+            let owner = parts[0];
+            let repo = parts[1];
+            return Some((
+                format!("github:pr:{owner}/{repo}#{num}"),
+                format!("https://github.com/{owner}/{repo}/pull/{num}"),
+            ));
+        }
+        rest = &after[end..];
+    }
+    None
 }
 
 fn extract_summary_from_jsonl_or_text(stdout: &str, stderr: &str) -> String {

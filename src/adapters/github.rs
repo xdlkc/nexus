@@ -109,6 +109,104 @@ pub fn parse_github_pr_state_json(raw: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Parses `/repos/<owner>/<repo>/issues` JSON array (newly opened/updated Issues and PRs) into normalized `Trigger`s.
+pub fn parse_github_issues_json(
+    cfg: &GithubAdapterConfig,
+    repo: &str,
+    raw: &serde_json::Value,
+    since_iso: Option<&str>,
+) -> (Vec<Trigger>, Option<String>) {
+    let mut triggers = Vec::new();
+    let mut latest_iso: Option<String> = since_iso.map(str::to_owned);
+
+    let Some(arr) = raw.as_array() else {
+        return (triggers, latest_iso);
+    };
+
+    for item in arr {
+        let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+        if number == 0 {
+            continue;
+        }
+        let created_at = item
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        if let Some(since) = since_iso
+            && !created_at.is_empty()
+            && created_at.as_str() <= since
+        {
+            continue;
+        }
+        if !created_at.is_empty() {
+            latest_iso = Some(match latest_iso {
+                Some(cur) if cur >= created_at => cur,
+                _ => created_at.clone(),
+            });
+        }
+
+        let login = item
+            .pointer("/user/login")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_owned();
+        let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let body = item.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        if body.contains("<!-- nexus-agent -->") {
+            continue;
+        }
+        let is_pr = item.get("pull_request").is_some();
+        // Skip PRs opened by our own bot_login unless they explicitly mention `@nexus`
+        if is_pr
+            && login.eq_ignore_ascii_case(&cfg.bot_login)
+            && !body.to_lowercase().contains("@nexus")
+        {
+            continue;
+        }
+
+        let thread_key = if is_pr {
+            format!("github:pr:{repo}#{number}")
+        } else {
+            format!("github:issue:{repo}#{number}")
+        };
+        let combined = if body.trim().is_empty() {
+            format!("[GitHub #{number}] {title}")
+        } else {
+            format!("[GitHub #{number}] {title}\n{body}")
+        };
+        let lower = combined.to_lowercase();
+        let addressed = !is_pr
+            || lower.contains(&format!("@{}", cfg.bot_login.to_lowercase()))
+            || lower.contains("@nexus")
+            || lower.contains("奈克斯");
+        let (clean_text, inline_target) = parse_inline_target_directive(&combined);
+
+        triggers.push(Trigger {
+            id: format!("gh-item-{repo}-{number}"),
+            source_id: cfg.source_id.clone(),
+            source_kind: SourceKindId::Github,
+            external_id: format!("item-{number}"),
+            thread_key,
+            actor_id: login,
+            actor_is_bot: false,
+            addressed_agent: addressed,
+            text: clean_text,
+            reply_to_trigger_id: None,
+            inline_target,
+            reply_channel: Some(ChannelAddress::GithubIssueComment {
+                source_id: cfg.source_id.clone(),
+                repo: repo.to_owned(),
+                number,
+            }),
+            at: created_at,
+            meta: BTreeMap::new(),
+        });
+    }
+
+    (triggers, latest_iso)
+}
+
 /// Parses `/repos/<owner>/<repo>/issues/comments` JSON array into normalized `Trigger`s.
 pub fn parse_github_issue_comments_json(
     cfg: &GithubAdapterConfig,
@@ -334,6 +432,31 @@ impl SourceAdapter for GithubAdapter {
         let mut latest_cursor: Option<String> = cursor.map(str::to_owned);
 
         for repo in &self.config.repos {
+            let issues_endpoint = match cursor {
+                Some(since) => {
+                    format!("repos/{repo}/issues?since={since}&state=open&per_page=20")
+                }
+                None => format!("repos/{repo}/issues?state=open&per_page=20"),
+            };
+            if let Ok(iss_out) = self
+                .build_command()
+                .args(["api", &issues_endpoint])
+                .output()
+                .await
+                && iss_out.status.success()
+                && let Ok(raw) = serde_json::from_slice::<serde_json::Value>(&iss_out.stdout)
+            {
+                let (mut trigs, max_iso) =
+                    parse_github_issues_json(&self.config, repo, &raw, cursor);
+                out.triggers.append(&mut trigs);
+                if let Some(iso) = max_iso {
+                    latest_cursor = Some(match latest_cursor {
+                        Some(cur) if cur >= iso => cur,
+                        _ => iso,
+                    });
+                }
+            }
+
             let ic_endpoint = match cursor {
                 Some(since) => {
                     format!("repos/{repo}/issues/comments?since={since}&per_page=30")

@@ -14,7 +14,9 @@ use crate::router::jev::{
 };
 use crate::router::jev_http::{HeuristicJevClassifier, HttpJevClient, HttpJevConfig};
 use crate::router::orchestrator::RouterLlmConfig;
-use crate::workers::driver::{WorkerTraceStep, read_worker_trace_steps};
+use crate::workers::driver::{
+    WorkerTraceStep, extract_github_pr_reference, read_worker_trace_steps,
+};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -160,8 +162,34 @@ async fn handle_dashboard() -> Html<&'static str> {
 }
 
 async fn handle_get_overview(State(app): State<SharedAppState>) -> Json<serde_json::Value> {
+    let default_repo = app
+        .config
+        .lock()
+        .unwrap()
+        .default_repo
+        .clone()
+        .unwrap_or_else(|| "xdlkc/nexus".to_owned());
     let state_val = {
-        let eng = app.engine.lock().unwrap();
+        let mut eng = app.engine.lock().unwrap();
+        for t in eng.state.tickets.values_mut() {
+            if t.repo.is_none() {
+                t.repo = Some(default_repo.clone());
+            }
+            if let Some(last_asg) = t.assignments.last_mut()
+                && let Some(rep) = &mut last_asg.latest_report
+                && rep.pull_request_url.is_none()
+                && let Some((pr_key, pr_url)) = extract_github_pr_reference(&rep.summary)
+            {
+                rep.pull_request_url = Some(pr_url);
+                if !t.follows.iter().any(|f| f.thread_key == pr_key) {
+                    t.follows.push(crate::core::model::FollowedThread {
+                        thread_key: pr_key,
+                        own: true,
+                        closed: None,
+                    });
+                }
+            }
+        }
         serde_json::to_value(&eng.state).unwrap_or_default()
     };
     let (cfg_val, mem_path) = {
