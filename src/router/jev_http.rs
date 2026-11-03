@@ -287,17 +287,21 @@ impl JevClassifier for HeuristicJevClassifier {
                         if is_injection { 0.98 } else { 0.01 }
                     } else if name == "is_looping" || name == "is_drifting" {
                         0.05
-                    } else {
-                        // Proactive rule match (`rule_*`)
+                    } else if addressed {
+                        // Proactive rule match (`rule_*`) when addressed or woken by keyword
                         0.88
+                    } else {
+                        0.05
                     };
                     answers.insert(name.clone(), ClassifierAnswer::Bool { probability: prob });
                 }
                 ClassifierQuestion::Choice { .. } => {
                     if name == "route_action" {
-                        let choice = if is_stop {
+                        let choice = if !addressed {
+                            "ignore"
+                        } else if is_stop {
                             "stop_ticket"
-                        } else if addressed || !state_text.is_empty() {
+                        } else if !state_text.is_empty() {
                             "new_ticket"
                         } else {
                             "ignore"

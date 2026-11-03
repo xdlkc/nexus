@@ -15,6 +15,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use tokio::process::Command;
 
+fn default_wake_keywords() -> Vec<String> {
+    vec!["奈克斯".to_owned(), "nexus".to_owned()]
+}
+
 /// Configuration for a Feishu (`lark-cli`) Source & Channel adapter instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeishuAdapterConfig {
@@ -24,6 +28,12 @@ pub struct FeishuAdapterConfig {
     pub bot_name: String,
     pub lark_bin: PathBuf,
     pub profile: Option<String>,
+    /// Whether to reply in a collapsed topic thread (`true`) or directly as a group chat message (`false`, default).
+    #[serde(default)]
+    pub reply_in_thread: bool,
+    /// Keywords or phrases that wake the agent in a group chat even when not `@`-mentioned.
+    #[serde(default = "default_wake_keywords")]
+    pub wake_keywords: Vec<String>,
 }
 
 impl Default for FeishuAdapterConfig {
@@ -40,8 +50,37 @@ impl Default for FeishuAdapterConfig {
             bot_name: "nexus".to_owned(),
             lark_bin: default_bin,
             profile: None,
+            reply_in_thread: false,
+            wake_keywords: default_wake_keywords(),
         }
     }
+}
+
+/// Determines whether a Feishu message explicitly addresses or wakes the agent:
+/// - Direct P2P messages (`chat_type == "p2p"`)
+/// - Explicit `@bot` mention in Feishu metadata
+/// - Message text contains `cfg.bot_name` (e.g. `"奈克斯，你来做xxx"`) or `"@nexus"`
+/// - Message text matches any keyword in `cfg.wake_keywords`
+pub fn is_feishu_message_addressed(
+    cfg: &FeishuAdapterConfig,
+    chat_type: &str,
+    extracted_text: &str,
+    mentioned_in_metadata: bool,
+) -> bool {
+    if chat_type == "p2p" || mentioned_in_metadata {
+        return true;
+    }
+    let lower = extracted_text.to_lowercase();
+    let bot_lower = cfg.bot_name.to_lowercase();
+    if !bot_lower.is_empty() && lower.contains(&bot_lower) {
+        return true;
+    }
+    if lower.contains("@nexus") || lower.contains("奈克斯") {
+        return true;
+    }
+    cfg.wake_keywords
+        .iter()
+        .any(|kw| !kw.trim().is_empty() && lower.contains(&kw.to_lowercase()))
 }
 
 /// Feishu (`lark-cli` / `lark-bot`) adapter implementing both `SourceAdapter` and `ChannelAdapter`.
@@ -246,12 +285,12 @@ pub fn parse_feishu_messages_json(
                 }
             }
         }
-        if extracted_text
-            .to_lowercase()
-            .contains(&format!("@{}", cfg.bot_name.to_lowercase()))
-        {
-            mentioned_bot = true;
-        }
+        let chat_type = item
+            .get("chat_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("group");
+        let mentioned_bot =
+            is_feishu_message_addressed(cfg, chat_type, &extracted_text, mentioned_bot);
 
         let (cleaned_text, inline_target) = parse_inline_target_directive(&extracted_text);
         let thread_key = format!("feishu:topic:{chat_id}:{root_id}");
@@ -385,8 +424,7 @@ pub fn parse_feishu_event_ndjson(
         let raw_content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let extracted_text = extract_feishu_message_text(raw_content);
 
-        // In P2P direct messages, the user is always addressing the bot directly.
-        let mut mentioned_bot = chat_type == "p2p";
+        let mut mentioned_bot = false;
         if let Some(mentions) = item.get("mentions").and_then(|v| v.as_array()) {
             for m in mentions {
                 let mid = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -398,13 +436,8 @@ pub fn parse_feishu_event_ndjson(
                 }
             }
         }
-        if extracted_text
-            .to_lowercase()
-            .contains(&format!("@{}", cfg.bot_name.to_lowercase()))
-            || extracted_text.to_lowercase().contains("@nexus")
-        {
-            mentioned_bot = true;
-        }
+        let mentioned_bot =
+            is_feishu_message_addressed(cfg, chat_type, &extracted_text, mentioned_bot);
 
         let (cleaned_text, inline_target) = parse_inline_target_directive(&extracted_text);
         let thread_key = format!("feishu:topic:{chat_id}:{root_id}");
@@ -607,7 +640,7 @@ impl ChannelAdapter for FeishuAdapter {
         let payload = serde_json::json!({
             "msg_type": "text",
             "content": content_json,
-            "reply_in_thread": true,
+            "reply_in_thread": self.config.reply_in_thread,
         })
         .to_string();
 

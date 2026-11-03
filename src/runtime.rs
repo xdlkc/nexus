@@ -14,7 +14,9 @@ use crate::infra::store::SqliteStore;
 use crate::router::jev::JevClassifier;
 use crate::router::llm::LlmClient;
 use crate::router::orchestrator::evaluate_thread_batch;
-use crate::workers::dispatcher::{WorkerSlots, build_worker_prompt, infer_launch_priority};
+use crate::workers::dispatcher::{
+    WorkerSlots, build_worker_prompt_with_memory, infer_launch_priority,
+};
 use crate::workers::driver::{
     WorkerLaunchContext, run_cli_harness_worker, run_pi_native_worker,
 };
@@ -240,7 +242,12 @@ where
                                 ticket.assignments.iter().find(|a| &a.id == assignment_id)
                             {
                                 let priority = infer_launch_priority(ticket);
-                                let prompt = build_worker_prompt(ticket, assign);
+                                let prompt = build_worker_prompt_with_memory(
+                                    ticket,
+                                    assign,
+                                    Some(&eng.state),
+                                    Some(&cfg.state_dir),
+                                );
                                 let repo_checkout = ticket
                                     .repo
                                     .as_ref()

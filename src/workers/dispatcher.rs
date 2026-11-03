@@ -1,7 +1,9 @@
 //! Priority-aware Worker concurrency slots (`WorkerSlots`) and Worker prompt builder.
 
-use crate::core::model::{Assignment, Ticket, TicketInputKind};
+use crate::core::engine::EngineState;
+use crate::core::model::{Assignment, ChannelAddress, OutboxStatus, Ticket, TicketInputKind};
 use std::collections::BTreeSet;
+use std::path::Path;
 
 /// Priority level of a Worker launch request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +92,16 @@ pub fn infer_launch_priority(ticket: &Ticket) -> LaunchPriority {
 /// Builds the structured system & task prompt injected into any Worker Harness (`pi-native`,
 /// `pi-rpc`, `claude-code`, `codex`, or `opencode`) when launching or resuming an Assignment.
 pub fn build_worker_prompt(ticket: &Ticket, assignment: &Assignment) -> String {
+    build_worker_prompt_with_memory(ticket, assignment, None, None)
+}
+
+/// Builds the Worker prompt enriched with chronological Chat Conversation History and Persistent Memory (`MEMORY.md`).
+pub fn build_worker_prompt_with_memory(
+    ticket: &Ticket,
+    assignment: &Assignment,
+    engine_state: Option<&EngineState>,
+    state_dir: Option<&Path>,
+) -> String {
     let mut sections = Vec::new();
 
     sections.push(format!(
@@ -109,6 +121,88 @@ pub fn build_worker_prompt(ticket: &Ticket, assignment: &Assignment) -> String {
         assignment.target.model,
         assignment.target.think_effort.as_str(),
     ));
+
+    let abs_memory_path = state_dir.map(|d| {
+        let base = std::fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
+        base.join("MEMORY.md")
+    });
+
+    if let Some(mem_path) = &abs_memory_path
+        && let Ok(mem_content) = std::fs::read_to_string(mem_path)
+        && !mem_content.trim().is_empty()
+    {
+        let preview: String = mem_content.trim().chars().take(4_000).collect();
+        sections.push(format!(
+            "## Persistent Long-Term Memory (`{}`)\n{}",
+            mem_path.display(),
+            preview
+        ));
+    }
+
+    if let Some(state) = engine_state {
+        let target_chat_id = ticket.channels.iter().find_map(|ch| match ch {
+            ChannelAddress::FeishuTopic { chat_id, .. } => Some(chat_id.as_str()),
+            _ => None,
+        });
+
+        let unread_trigger_ids: BTreeSet<&str> = ticket
+            .inputs
+            .iter()
+            .filter(|i| !i.read_by_worker && i.handed_back_reason.is_none())
+            .filter_map(|i| match &i.kind {
+                TicketInputKind::TriggerFanOut { trigger_id, .. } => Some(trigger_id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        let mut timeline: Vec<(String, String)> = Vec::new();
+
+        for tr in state.triggers.values() {
+            if unread_trigger_ids.contains(tr.id.as_str()) {
+                continue;
+            }
+            let same_chat = match (&tr.reply_channel, target_chat_id) {
+                (Some(ChannelAddress::FeishuTopic { chat_id, .. }), Some(cid)) => chat_id == cid,
+                _ => tr.source_id == ticket.mandate.source_id,
+            };
+            if same_chat && !tr.text.trim().is_empty() {
+                timeline.push((
+                    tr.at.clone(),
+                    format!(
+                        "- **[User `{}`]**: {}",
+                        tr.actor_id,
+                        tr.text.replace('\n', " ")
+                    ),
+                ));
+            }
+        }
+
+        for msg in state.outbox.values() {
+            if msg.status != OutboxStatus::Sent {
+                continue;
+            }
+            let same_chat = match (&msg.channel, target_chat_id) {
+                (ChannelAddress::FeishuTopic { chat_id, .. }, Some(cid)) => chat_id == cid,
+                _ => true,
+            };
+            if same_chat && !msg.body.trim().is_empty() {
+                timeline.push((
+                    msg.created_at.clone(),
+                    format!("- **[Assistant (奈克斯)]**: {}", msg.body.replace('\n', " ")),
+                ));
+            }
+        }
+
+        timeline.sort_by(|a, b| a.0.cmp(&b.0));
+        let start = timeline.len().saturating_sub(16);
+        let recent_lines: Vec<String> = timeline[start..].iter().map(|(_, line)| line.clone()).collect();
+        if !recent_lines.is_empty() {
+            sections.push(format!(
+                "## Recent Conversation History in This Chat\n{}",
+                recent_lines.join("\n")
+            ));
+        }
+    }
 
     // Include any unread inputs (including cross-harness Handoff cards and human follow-ups).
     let unread: Vec<_> = ticket
@@ -167,15 +261,23 @@ pub fn build_worker_prompt(ticket: &Ticket, assignment: &Assignment) -> String {
         sections.push(input_lines.join("\n"));
     }
 
-    sections.push(
+    let memory_instruction = match abs_memory_path {
+        Some(p) => format!(
+            "\n6. Maintain conversational continuity using `Recent Conversation History in This Chat` and `Persistent Long-Term Memory` above. When the user tells you personal details, preferences, or long-term project rules to remember, save or append them to `{}`.",
+            p.display()
+        ),
+        None => String::new(),
+    };
+
+    sections.push(format!(
         "## Operating Rules & Shims\n\
          1. Use `gh-agent` for GitHub operations, `lark-bot` for Feishu operations, and `gws-agent` for Google Workspace.\n\
          2. When you need full spilled text for a truncated trigger or thread, run `nexus worker read <uri>` (or call `orchestrator_read`).\n\
          3. If a follow-up trigger in your inbox is unrelated to this Ticket, hand it back via `nexus worker handback <trigger_id> --reason \"...\"`.\n\
          4. Your final response text is automatically captured and delivered to the user channel, or you may explicitly call `nexus worker report --status <ready|waiting|blocked|failed> --summary \"...\" [--pr-thread github:pr:owner/repo#N --pr-url https://...]` (or `worker_report`).\n\
-         5. Keep any IM-facing summary or reply concise (strictly <= 90 words / characters)."
-            .to_owned(),
-    );
+         5. Keep any IM-facing summary or reply concise (strictly <= 90 words / characters).{}",
+        memory_instruction
+    ));
 
     sections.join("\n\n")
 }

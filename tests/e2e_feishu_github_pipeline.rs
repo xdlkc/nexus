@@ -223,3 +223,117 @@ async fn end_to_end_feishu_lark_cli_and_github_gh_closed_loop() {
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
+
+#[test]
+fn feishu_wake_conditions_and_conversation_memory_prompt() {
+    use nexus::adapters::feishu::is_feishu_message_addressed;
+    use nexus::core::model::{
+        AdmissionStrength, ChannelAddress, ExecutionTarget, OutboxPurpose, SourceKindId, Trigger,
+    };
+    use nexus::infra::effects::mark_outbox_sent;
+    use nexus::workers::dispatcher::build_worker_prompt_with_memory;
+    use std::collections::BTreeMap;
+
+    let mut cfg = NexusConfig::default_with_state_dir("/tmp/nexus-mem-test".into());
+    cfg.feishu.bot_name = "奈克斯".to_owned();
+    assert!(!cfg.feishu.reply_in_thread);
+
+    // 1. Un-`@`ed casual chat in group is NOT addressed
+    assert!(!is_feishu_message_addressed(
+        &cfg.feishu,
+        "group",
+        "今天中午吃什么？",
+        false
+    ));
+
+    // 2. Un-`@`ed message mentioning "奈克斯，你来做xxx" IS addressed
+    assert!(is_feishu_message_addressed(
+        &cfg.feishu,
+        "group",
+        "奈克斯，你来做一下剪贴板历史搜索功能",
+        false
+    ));
+
+    // 3. Conversational memory prompt includes prior turns in the same chat
+    let mut engine = Engine::new("/tmp/nexus-wt");
+    let ch = ChannelAddress::FeishuTopic {
+        source_id: "feishu-main".to_owned(),
+        chat_id: "oc_group_1".to_owned(),
+        root_message_id: "om_1".to_owned(),
+        reply_to_message_id: "om_1".to_owned(),
+    };
+    engine.receive_trigger(
+        Trigger {
+            id: "feishu-msg-om_1".to_owned(),
+            source_id: "feishu-main".to_owned(),
+            source_kind: SourceKindId::Feishu,
+            external_id: "om_1".to_owned(),
+            thread_key: "feishu:topic:oc_group_1:om_1".to_owned(),
+            actor_id: "ou_user".to_owned(),
+            actor_is_bot: false,
+            addressed_agent: true,
+            text: "记住我的项目叫 clipboard-history".to_owned(),
+            reply_to_trigger_id: None,
+            inline_target: None,
+            reply_channel: Some(ch.clone()),
+            at: "2026-11-03T01:00:00Z".to_owned(),
+            meta: BTreeMap::new(),
+        },
+        AdmissionStrength::Explicit,
+    );
+    let out_id = engine
+        .queue_outbox_message(
+            None,
+            ch.clone(),
+            OutboxPurpose::Answer,
+            "好的，已记住你的项目是 clipboard-history。",
+            "2026-11-03T01:00:05Z",
+        )
+        .unwrap();
+    mark_outbox_sent(&mut engine, &out_id);
+
+    // Second turn in the same chat
+    engine.receive_trigger(
+        Trigger {
+            id: "feishu-msg-om_2".to_owned(),
+            source_id: "feishu-main".to_owned(),
+            source_kind: SourceKindId::Feishu,
+            external_id: "om_2".to_owned(),
+            thread_key: "feishu:topic:oc_group_1:om_2".to_owned(),
+            actor_id: "ou_user".to_owned(),
+            actor_is_bot: false,
+            addressed_agent: true,
+            text: "我刚刚让你记住的项目叫什么？".to_owned(),
+            reply_to_trigger_id: None,
+            inline_target: None,
+            reply_channel: Some(ch),
+            at: "2026-11-03T01:01:00Z".to_owned(),
+            meta: BTreeMap::new(),
+        },
+        AdmissionStrength::Explicit,
+    );
+    let tkt_id = engine
+        .accept_ticket(
+            "feishu-msg-om_2",
+            "询问项目名",
+            None,
+            AdmissionStrength::Explicit,
+            vec![],
+            ExecutionTarget {
+                harness: HarnessKind::Codex,
+                provider: "openai".to_owned(),
+                model: "gpt-6-astra".to_owned(),
+                think_effort: ThinkEffort::Medium,
+            },
+            None,
+            "2026-11-03T01:01:01Z",
+        )
+        .unwrap();
+
+    let ticket = &engine.state.tickets[&tkt_id];
+    let assign = &ticket.assignments[0];
+    let prompt = build_worker_prompt_with_memory(ticket, assign, Some(&engine.state), None);
+    assert!(prompt.contains("Recent Conversation History in This Chat"));
+    assert!(prompt.contains("记住我的项目叫 clipboard-history"));
+    assert!(prompt.contains("好的，已记住你的项目是 clipboard-history。"));
+}
