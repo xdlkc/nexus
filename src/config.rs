@@ -11,6 +11,44 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Isolated Agent identity and CLI workspace configuration (`<state_dir>/agent-home/`).
+/// Ensures Nexus (and all its Workers) operate under their own dedicated Git, GitHub (`gh`),
+/// Feishu (`lark-cli`), Google Workspace (`gws`), and DingTalk (`dws`) accounts without
+/// polluting or sharing the user's personal host CLI sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentIdentityConfig {
+    /// Dedicated Git commit author/committer name for Nexus Workers.
+    pub git_user_name: String,
+    /// Dedicated Git commit author/committer email for Nexus Workers.
+    pub git_user_email: String,
+    /// Optional dedicated GitHub Personal Access Token (`GH_TOKEN`) for Nexus's own GitHub account.
+    #[serde(default)]
+    pub github_agent_token: Option<String>,
+    /// When `true` (or when `github_agent_token` is set), isolates `GH_CONFIG_DIR` to `<state_dir>/agent-home/gh`
+    /// so Nexus never touches the host user's `~/.config/gh`.
+    #[serde(default)]
+    pub isolate_gh_config: bool,
+    /// Optional dedicated Google Workspace (`gws`) account email/profile for `gws-agent`.
+    #[serde(default)]
+    pub gws_account: Option<String>,
+    /// Optional dedicated DingTalk (`dws`) profile for `dws-agent`.
+    #[serde(default)]
+    pub dws_profile: Option<String>,
+}
+
+impl Default for AgentIdentityConfig {
+    fn default() -> Self {
+        Self {
+            git_user_name: "Nexus Agent (奈克斯)".to_owned(),
+            git_user_email: "nexus-agent@users.noreply.github.com".to_owned(),
+            github_agent_token: None,
+            isolate_gh_config: false,
+            gws_account: None,
+            dws_profile: None,
+        }
+    }
+}
+
 /// Top-level configuration for a Nexus daemon instance (`<state_dir>/config.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NexusConfig {
@@ -21,6 +59,8 @@ pub struct NexusConfig {
     pub max_concurrent_workers: usize,
     pub feishu: FeishuAdapterConfig,
     pub github: GithubAdapterConfig,
+    #[serde(default)]
+    pub agent_identity: AgentIdentityConfig,
     #[serde(default)]
     pub default_repo: Option<String>,
     pub repositories: BTreeMap<String, PathBuf>,
@@ -42,6 +82,7 @@ impl NexusConfig {
             max_concurrent_workers: 4,
             feishu: FeishuAdapterConfig::default(),
             github: GithubAdapterConfig::default(),
+            agent_identity: AgentIdentityConfig::default(),
             default_repo: Some("xdlkc/nexus".to_owned()),
             repositories: BTreeMap::new(),
             allowed_actors: HashSet::new(),

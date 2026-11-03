@@ -6,7 +6,7 @@ use nexus::http::{
     SharedAppState, WorkerHandbackPayload, WorkerReportPayload, WorkerSwitchTargetPayload,
     build_http_router,
 };
-use nexus::infra::shims::{ShimConfig, provision_worker_shims};
+use nexus::infra::shims::provision_agent_workspace_from_config;
 use nexus::infra::store::SqliteStore;
 use nexus::router::jev::{ClassifierContext, ClassifierResult, JevClassifier};
 use nexus::router::jev_http::{HeuristicJevClassifier, HttpJevClient};
@@ -209,16 +209,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let cfg_path = cfg.save()?;
-            let shims = provision_worker_shims(&ShimConfig {
-                state_dir: cfg.state_dir.clone(),
-                github_token: std::env::var("GITHUB_TOKEN")
-                    .or_else(|_| std::env::var("GH_TOKEN"))
-                    .ok(),
-                github_config_dir: None,
-                lark_profile: cfg.feishu.profile.clone(),
-                gws_account: None,
-                nexus_bin_path: std::env::current_exe().ok(),
-            })?;
+            let shims = provision_agent_workspace_from_config(&cfg)?;
 
             println!("=== Nexus Environment Probe ===");
             for p in probe_environment() {

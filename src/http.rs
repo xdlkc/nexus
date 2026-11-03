@@ -1,6 +1,6 @@
 //! Local `axum` Management Console & Worker-Callback HTTP API (`127.0.0.1:3082`).
 
-use crate::config::{NexusConfig, probe_environment};
+use crate::config::{AgentIdentityConfig, NexusConfig, probe_environment};
 use crate::core::engine::Engine;
 use crate::core::gate::{evaluate_gate_strength, parse_inline_target_directive};
 use crate::core::model::{
@@ -8,6 +8,7 @@ use crate::core::model::{
     SourceKindId, ThinkEffort, Trigger,
 };
 use crate::core::recall::RecallCaller;
+use crate::infra::shims::provision_agent_workspace_from_config;
 use crate::infra::store::SqliteStore;
 use crate::router::jev::{
     JevClassifier, JevTriageInput, build_jev_triage_context, run_jev_triage,
@@ -96,6 +97,8 @@ pub struct SimulateChatPayload {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateConfigPayload {
     pub bot_name: Option<String>,
+    pub feishu_profile: Option<String>,
+    pub github_bot_login: Option<String>,
     pub reply_in_thread: Option<bool>,
     pub ack_reaction: Option<String>,
     pub wake_keywords: Option<Vec<String>>,
@@ -107,6 +110,7 @@ pub struct UpdateConfigPayload {
     pub jev_enabled: Option<bool>,
     pub jev: Option<HttpJevConfig>,
     pub router_llm: Option<RouterLlmConfig>,
+    pub agent_identity: Option<AgentIdentityConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -131,6 +135,7 @@ pub fn build_http_router(state: SharedAppState) -> Router {
         .route("/api/triggers", post(handle_post_trigger))
         .route("/api/chat/simulate", post(handle_simulate_chat))
         .route("/api/jev/test", post(handle_test_jev))
+        .route("/api/identity/status", get(handle_identity_status))
         .route("/api/config", get(handle_get_config).post(handle_update_config))
         .route("/api/memory", get(handle_get_memory).post(handle_save_memory))
         .route("/api/worker/models", get(handle_worker_models))
@@ -373,6 +378,18 @@ async fn handle_update_config(
     {
         cfg.feishu.bot_name = name;
     }
+    if let Some(profile) = payload.feishu_profile {
+        cfg.feishu.profile = if profile.trim().is_empty() {
+            None
+        } else {
+            Some(profile.trim().to_owned())
+        };
+    }
+    if let Some(gh_login) = payload.github_bot_login
+        && !gh_login.trim().is_empty()
+    {
+        cfg.github.bot_login = gh_login.trim().to_owned();
+    }
     if let Some(reply_in_thread) = payload.reply_in_thread {
         cfg.feishu.reply_in_thread = reply_in_thread;
     }
@@ -422,11 +439,179 @@ async fn handle_update_config(
     if let Some(rllm) = payload.router_llm {
         cfg.router_llm = rllm;
     }
+    if let Some(mut aid) = payload.agent_identity {
+        // If UI passes empty/masked token "***", preserve existing token unless explicitly cleared
+        if aid.github_agent_token.as_deref() == Some("***") {
+            aid.github_agent_token = cfg.agent_identity.github_agent_token.clone();
+        } else if aid
+            .github_agent_token
+            .as_ref()
+            .is_some_and(|s| s.trim().is_empty())
+        {
+            aid.github_agent_token = None;
+        }
+        cfg.agent_identity = aid;
+    }
     let _ = cfg.save();
+    let _ = provision_agent_workspace_from_config(&cfg);
     (
         StatusCode::OK,
         Json(serde_json::json!({ "ok": true, "config": &*cfg })),
     )
+}
+
+async fn handle_identity_status(State(app): State<SharedAppState>) -> Json<serde_json::Value> {
+    let cfg = {
+        let guard = app.config.lock().unwrap();
+        let _ = provision_agent_workspace_from_config(&guard);
+        guard.clone()
+    };
+
+    let abs_state_dir =
+        std::fs::canonicalize(&cfg.state_dir).unwrap_or_else(|_| cfg.state_dir.clone());
+    let worker_bin = abs_state_dir.join("worker-bin");
+    let gitconfig_path = abs_state_dir.join("worker-gitconfig");
+    let agent_home = abs_state_dir.join("agent-home");
+    let gh_home = agent_home.join("gh");
+    let gws_home = agent_home.join("gws");
+    let dws_home = agent_home.join("dws");
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let clean_path = format!(
+        "{home}/.local/bin:{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    );
+
+    // 1. Probe Host Git vs Nexus Isolated Git
+    let host_git_name = tokio::process::Command::new("git")
+        .env("PATH", &clean_path)
+        .args(["config", "--global", "user.name"])
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default();
+    let host_git_email = tokio::process::Command::new("git")
+        .env("PATH", &clean_path)
+        .args(["config", "--global", "user.email"])
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default();
+
+    let agent_git_name = tokio::process::Command::new("git")
+        .env("PATH", &clean_path)
+        .env("GIT_CONFIG_GLOBAL", &gitconfig_path)
+        .args(["config", "--global", "user.name"])
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default();
+    let agent_git_email = tokio::process::Command::new("git")
+        .env("PATH", &clean_path)
+        .env("GIT_CONFIG_GLOBAL", &gitconfig_path)
+        .args(["config", "--global", "user.email"])
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default();
+
+    // 2. Probe Host `gh` vs Nexus `gh-agent`
+    let host_gh_login = match tokio::process::Command::new("gh")
+        .env("PATH", &clean_path)
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_CONFIG_DIR")
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+        .await
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+        _ => "未登录".to_owned(),
+    };
+
+    let gh_agent_bin = worker_bin.join("gh-agent");
+    let (agent_gh_login, agent_gh_ok, agent_gh_note) = match tokio::process::Command::new(&gh_agent_bin)
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+        .await
+    {
+        Ok(out) if out.status.success() => {
+            let login = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            (login, true, "已认证".to_owned())
+        }
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+            (
+                "待登录 / 待配置 Token".to_owned(),
+                false,
+                if err.is_empty() {
+                    "独立 GH_CONFIG_DIR 尚未登录".to_owned()
+                } else {
+                    err.lines().next().unwrap_or("未认证").to_owned()
+                },
+            )
+        }
+        Err(e) => ("不可用".to_owned(), false, e.to_string()),
+    };
+
+    let has_dedicated_gh_token = cfg
+        .agent_identity
+        .github_agent_token
+        .as_ref()
+        .is_some_and(|s| !s.trim().is_empty());
+    let has_isolated_gh_hosts = gh_home.join("hosts.yml").exists();
+    let gh_is_isolated =
+        cfg.agent_identity.isolate_gh_config || has_dedicated_gh_token || has_isolated_gh_hosts;
+
+    Json(serde_json::json!({
+        "ok": true,
+        "workspace": {
+            "state_dir": abs_state_dir,
+            "agent_home": agent_home,
+            "worker_bin": worker_bin,
+            "gitconfig_path": gitconfig_path,
+            "gh_config_dir": gh_home,
+            "gws_config_dir": gws_home,
+            "dws_config_dir": dws_home,
+        },
+        "git": {
+            "host_name": host_git_name,
+            "host_email": host_git_email,
+            "agent_name": agent_git_name,
+            "agent_email": agent_git_email,
+            "isolated": true,
+        },
+        "github": {
+            "host_login": host_gh_login,
+            "agent_login": agent_gh_login,
+            "configured_bot_login": cfg.github.bot_login,
+            "agent_authenticated": agent_gh_ok,
+            "agent_note": agent_gh_note,
+            "isolated": gh_is_isolated,
+            "has_dedicated_token": has_dedicated_gh_token,
+            "has_isolated_hosts_yml": has_isolated_gh_hosts,
+            "login_cmd": format!("GH_CONFIG_DIR='{}' gh auth login", gh_home.display()),
+        },
+        "feishu": {
+            "bot_name": cfg.feishu.bot_name,
+            "bot_open_id": cfg.feishu.bot_open_id,
+            "profile": cfg.feishu.profile,
+            "isolated": cfg.feishu.profile.is_some(),
+        },
+        "gws": {
+            "account": cfg.agent_identity.gws_account,
+            "config_dir": gws_home,
+            "isolated": true,
+        },
+        "dws": {
+            "profile": cfg.agent_identity.dws_profile,
+            "config_dir": dws_home,
+            "isolated": true,
+        }
+    }))
 }
 
 async fn handle_get_memory(State(app): State<SharedAppState>) -> Json<serde_json::Value> {

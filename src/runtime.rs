@@ -9,7 +9,7 @@ use crate::core::engine::Engine;
 use crate::core::gate::evaluate_gate_strength;
 use crate::core::model::{EffectKind, HarnessKind};
 use crate::infra::effects::{mark_outbox_sent, pop_next_effect, record_effect_failure};
-use crate::infra::shims::{ShimConfig, provision_worker_shims};
+use crate::infra::shims::provision_agent_workspace_from_config;
 use crate::infra::store::SqliteStore;
 use crate::router::jev::JevClassifier;
 use crate::router::llm::LlmClient;
@@ -59,16 +59,7 @@ where
     ) -> anyhow::Result<Self> {
         let max_slots = {
             let cfg = config.lock().unwrap();
-            let _ = provision_worker_shims(&ShimConfig {
-                state_dir: cfg.state_dir.clone(),
-                github_token: std::env::var("GITHUB_TOKEN")
-                    .or_else(|_| std::env::var("GH_TOKEN"))
-                    .ok(),
-                github_config_dir: None,
-                lark_profile: cfg.feishu.profile.clone(),
-                gws_account: None,
-                nexus_bin_path: std::env::current_exe().ok(),
-            });
+            let _ = provision_agent_workspace_from_config(&cfg);
             cfg.max_concurrent_workers
         };
 
@@ -100,6 +91,14 @@ where
             let cfg = self.config.lock().unwrap();
             let eng = self.engine.lock().unwrap();
             let mut g_cfg = cfg.github.clone();
+            if g_cfg.gh_bin == Path::new("gh") {
+                let abs_state =
+                    std::fs::canonicalize(&cfg.state_dir).unwrap_or_else(|_| cfg.state_dir.clone());
+                let gh_agent = abs_state.join("worker-bin").join("gh-agent");
+                if gh_agent.exists() {
+                    g_cfg.gh_bin = gh_agent;
+                }
+            }
             // Collect all open PR threads followed by active tickets so GithubAdapter polls their merge state!
             for t in eng.state.tickets.values().filter(|t| t.is_open()) {
                 for f in &t.follows {
@@ -490,7 +489,16 @@ where
 
                     let (feishu_cfg, github_cfg) = {
                         let cfg = self.config.lock().unwrap();
-                        (cfg.feishu.clone(), cfg.github.clone())
+                        let mut g_cfg = cfg.github.clone();
+                        if g_cfg.gh_bin == Path::new("gh") {
+                            let abs_state = std::fs::canonicalize(&cfg.state_dir)
+                                .unwrap_or_else(|_| cfg.state_dir.clone());
+                            let gh_agent = abs_state.join("worker-bin").join("gh-agent");
+                            if gh_agent.exists() {
+                                g_cfg.gh_bin = gh_agent;
+                            }
+                        }
+                        (cfg.feishu.clone(), g_cfg)
                     };
                     let feishu_adapter = FeishuAdapter::new(feishu_cfg);
                     let github_adapter = GithubAdapter::new(github_cfg);

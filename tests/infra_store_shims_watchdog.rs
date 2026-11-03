@@ -1,9 +1,12 @@
+use nexus::config::NexusConfig;
 use nexus::core::engine::Engine;
 use nexus::core::model::{
     AdmissionStrength, ExecutionTarget, HarnessKind, SourceKindId, ThinkEffort, Trigger,
 };
 use nexus::infra::effects::{compute_backoff_ms, pop_next_effect, record_effect_failure};
-use nexus::infra::shims::{ShimConfig, provision_worker_shims};
+use nexus::infra::shims::{
+    ShimConfig, provision_agent_workspace_from_config, provision_worker_shims,
+};
 use nexus::infra::store::SqliteStore;
 use nexus::infra::watchdog::{WatchdogVerdict, inspect_and_recover_worker};
 use nexus::router::jev::{
@@ -102,6 +105,51 @@ fn provisions_executable_worker_shims_and_gitconfig() {
     let gitconfig = std::fs::read_to_string(&shims.gitconfig_path).unwrap();
     assert!(gitconfig.contains("insteadOf = git@github.com:"));
     assert!(gitconfig.contains("auth git-credential"));
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn provisions_isolated_agent_workspace_from_config() {
+    let tmp_dir = std::env::temp_dir().join(format!("nexus-agent-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    let mut cfg = NexusConfig::default_with_state_dir(tmp_dir.clone());
+    cfg.feishu.profile = Some("cli_aa62798efef8dcec".to_owned());
+    cfg.agent_identity.git_user_name = "奈克斯 (Nexus Bot)".to_owned();
+    cfg.agent_identity.git_user_email = "nexus-bot@example.com".to_owned();
+    cfg.agent_identity.github_agent_token = Some("ghp_dedicated_nexus_token".to_owned());
+    cfg.agent_identity.isolate_gh_config = true;
+    cfg.agent_identity.gws_account = Some("nexus-bot@company.com".to_owned());
+    cfg.agent_identity.dws_profile = Some("nexus_dws".to_owned());
+
+    let shims = provision_agent_workspace_from_config(&cfg).unwrap();
+
+    // Isolated agent-home directories exist with 0700 permissions
+    let gh_home = shims
+        .worker_bin_dir
+        .parent()
+        .unwrap()
+        .join("agent-home")
+        .join("gh");
+    assert!(gh_home.exists());
+    assert_eq!(
+        std::fs::metadata(&gh_home).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+
+    // Both `gh-agent` and bare `gh` wrapper in worker-bin carry isolated GH_TOKEN and GH_CONFIG_DIR
+    for bin_name in ["gh-agent", "gh"] {
+        let content = std::fs::read_to_string(shims.worker_bin_dir.join(bin_name)).unwrap();
+        assert!(content.contains("GH_TOKEN='ghp_dedicated_nexus_token'"));
+        assert!(content.contains("GH_CONFIG_DIR="));
+        assert!(content.contains("grep -vF '/worker-bin'"));
+    }
+
+    // `worker-gitconfig` carries custom Git identity
+    let gitconfig = std::fs::read_to_string(&shims.gitconfig_path).unwrap();
+    assert!(gitconfig.contains("name = 奈克斯 (Nexus Bot)"));
+    assert!(gitconfig.contains("email = nexus-bot@example.com"));
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }

@@ -595,6 +595,55 @@
           <div id="cfg-bound-repos-info" style="font-size:0.8rem; color:var(--text-muted); margin-top:0.2rem"></div>
 
           <hr style="border:none; border-top:1px solid var(--border); margin:1.25rem 0" />
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.65rem">
+            <div>
+              <h3 style="font-size:0.95rem; margin:0">奈克斯独立身份与 CLI 工作空间隔离 (`agent_identity` · `.nexus/agent-home/`)</h3>
+              <div style="font-size:0.78rem; color:var(--text-muted); margin-top:0.2rem">
+                将奈克斯的 Git Author、GitHub (`gh`)、飞书 (`lark-cli`)、Google Workspace (`gws`)、钉钉 (`dws`) 账号与你本机终端的 CLI 凭据彻底隔离。
+              </div>
+            </div>
+            <button class="btn" onclick="probeIdentityStatus()">检测宿主机 vs 奈克斯身份</button>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>奈克斯 Git 提交用户名 (`agent_identity.git_user_name`)</label>
+              <input type="text" id="cfg-git-user-name" placeholder="Nexus Agent (奈克斯)" />
+            </div>
+            <div class="form-group">
+              <label>奈克斯 Git 提交邮箱 (`agent_identity.git_user_email`)</label>
+              <input type="text" id="cfg-git-user-email" placeholder="nexus-agent@users.noreply.github.com" />
+            </div>
+            <div class="form-group">
+              <label>奈克斯独立 GitHub 账号名 (`github.bot_login`)</label>
+              <input type="text" id="cfg-github-bot-login" placeholder="例如 nexus-bot 或你的独立机器人账号名" />
+            </div>
+            <div class="form-group">
+              <label>奈克斯专属 GitHub Token (`agent_identity.github_agent_token`)</label>
+              <input type="password" id="cfg-github-agent-token" placeholder="填入独立账号 ghp_ / github_pat_ Token，自动隔离本机 gh" />
+            </div>
+            <div class="form-group">
+              <label>GitHub 配置目录隔离 (`GH_CONFIG_DIR`)</label>
+              <select id="cfg-isolate-gh-config">
+                <option value="false">按需隔离（配置了专属 Token 或 agent-home/gh 已登录时自动隔离）</option>
+                <option value="true">强制启用独立目录 (.nexus/agent-home/gh，完全不使用 ~/.config/gh)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>飞书独立 CLI Profile (`feishu.profile`)</label>
+              <input type="text" id="cfg-feishu-profile" placeholder="cli_aa62798efef8dcec" />
+            </div>
+            <div class="form-group">
+              <label>Google Workspace 独立账号 (`agent_identity.gws_account`)</label>
+              <input type="text" id="cfg-gws-account" placeholder="nexus-bot@company.com (隔离于 .nexus/agent-home/gws)" />
+            </div>
+            <div class="form-group">
+              <label>钉钉 DWS 独立 Profile (`agent_identity.dws_profile`)</label>
+              <input type="text" id="cfg-dws-profile" placeholder="nexus-bot (隔离于 .nexus/agent-home/dws)" />
+            </div>
+          </div>
+          <div id="identity-probe-box" style="display:none; margin-top:0.85rem; padding:0.85rem; background:var(--bg-card); border:1px solid var(--border); border-radius:8px; font-size:0.8rem"></div>
+
+          <hr style="border:none; border-top:1px solid var(--border); margin:1.25rem 0" />
           <h3 style="font-size:0.95rem; margin-top:0">默认 Worker 执行引擎 (Default ExecutionTarget)</h3>
           <div class="form-grid">
             <div class="form-group">
@@ -691,6 +740,19 @@
       <section class="tab-pane" id="tab-toolchain">
         <div class="card">
           <div class="card-header">
+            <div>
+              <h2 class="card-title">宿主机本地 CLI vs 奈克斯独立工作空间 (`agent-home` + `worker-bin`) 实时对比</h2>
+              <div style="font-size:0.8rem; color:var(--text-muted); margin-top:0.2rem">
+                Worker 进程自动注入 `PATH=.nexus/worker-bin:$PATH` 与 `GIT_CONFIG_GLOBAL=.nexus/worker-gitconfig`，并剥离宿主敏感环境变量。
+              </div>
+            </div>
+            <button class="btn btn-primary" onclick="probeIdentityStatus()">刷新身份隔离状态</button>
+          </div>
+          <div id="toolchain-identity-summary" style="font-size:0.82rem; color:var(--text-muted)">正在探测隔离工作空间状态...</div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
             <h2 class="card-title">宿主机 CLI 工具链与凭据隔离垫片探针</h2>
           </div>
           <table>
@@ -764,7 +826,7 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('memory-editor').addEventListener('input', () => { memoryDirty = true; });
-      ['cfg-bot-name','cfg-reply-in-thread','cfg-ack-reaction','cfg-wake-keywords','cfg-chat-ids','cfg-github-repos','cfg-default-repo','cfg-allowed-actors','cfg-default-harness','cfg-default-provider','cfg-default-model','cfg-default-think','cfg-jev-mode','cfg-jev-base-url','cfg-jev-model','cfg-jev-api-key','cfg-router-provider','cfg-router-model','cfg-router-think'].forEach(id => {
+      ['cfg-bot-name','cfg-reply-in-thread','cfg-ack-reaction','cfg-wake-keywords','cfg-chat-ids','cfg-github-repos','cfg-default-repo','cfg-allowed-actors','cfg-git-user-name','cfg-git-user-email','cfg-github-bot-login','cfg-github-agent-token','cfg-isolate-gh-config','cfg-feishu-profile','cfg-gws-account','cfg-dws-profile','cfg-default-harness','cfg-default-provider','cfg-default-model','cfg-default-think','cfg-jev-mode','cfg-jev-base-url','cfg-jev-model','cfg-jev-api-key','cfg-router-provider','cfg-router-model','cfg-router-think'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('input', () => { configDirty = true; });
       });
@@ -844,6 +906,7 @@
       document.getElementById('tab-' + tabId).classList.add('active');
       if (btn) btn.classList.add('active');
       if (tabId === 'trajectory') fetchWorkerTrace();
+      if (tabId === 'toolchain') probeIdentityStatus();
     }
 
     async function inspectTrajectory(ticketId) {
@@ -1173,6 +1236,16 @@
         const reposMap = cfg.repositories || {};
         const reposEntries = Object.entries(reposMap).filter(([k]) => k.includes('/')).map(([k, v]) => `<code>${escapeHtml(k)} → ${escapeHtml(v)}</code>`).join(' · ');
         document.getElementById('cfg-bound-repos-info').innerHTML = reposEntries ? `已映射本地代码库目录: ${reposEntries}` : '';
+        const aid = cfg.agent_identity || {};
+        document.getElementById('cfg-git-user-name').value = aid.git_user_name || 'Nexus Agent (奈克斯)';
+        document.getElementById('cfg-git-user-email').value = aid.git_user_email || 'nexus-agent@users.noreply.github.com';
+        document.getElementById('cfg-github-bot-login').value = (cfg.github && cfg.github.bot_login) || 'nexus-bot';
+        document.getElementById('cfg-github-agent-token').value = aid.github_agent_token || '';
+        document.getElementById('cfg-isolate-gh-config').value = String(Boolean(aid.isolate_gh_config));
+        document.getElementById('cfg-feishu-profile').value = (cfg.feishu && cfg.feishu.profile) || '';
+        document.getElementById('cfg-gws-account').value = aid.gws_account || '';
+        document.getElementById('cfg-dws-profile').value = aid.dws_profile || '';
+
         const firstRuleTarget = (cfg.proactive_rules && cfg.proactive_rules[0] && cfg.proactive_rules[0].default_target) || {};
         document.getElementById('cfg-default-harness').value = firstRuleTarget.harness || 'codex';
         document.getElementById('cfg-default-provider').value = firstRuleTarget.provider || 'openai';
@@ -1265,12 +1338,80 @@
       outEl.textContent = JSON.stringify(data, null, 2);
     }
 
+    async function probeIdentityStatus() {
+      const box1 = document.getElementById('identity-probe-box');
+      const box2 = document.getElementById('toolchain-identity-summary');
+      if (box1) { box1.style.display = 'block'; box1.innerHTML = '正在探测宿主机本地 CLI 与奈克斯独立工作空间...'; }
+      try {
+        const res = await fetch('/api/identity/status');
+        const d = await res.json();
+        const ghIsoBadge = d.github.isolated
+          ? '<span class="badge badge-green">已独立隔离</span>'
+          : '<span class="badge badge-amber">共享宿主机 gh (待配置独立账号)</span>';
+        const html = `
+          <div style="margin-bottom:0.55rem">
+            <strong>独立工作空间根目录:</strong> <code>${escapeHtml(d.workspace.agent_home)}</code> &nbsp;|&nbsp;
+            <strong>垫片目录:</strong> <code>${escapeHtml(d.workspace.worker_bin)}</code>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>工具 / 维度</th>
+                <th>你本机终端的 CLI 身份 (Host)</th>
+                <th>奈克斯 Worker 独立工作空间身份 (Agent)</th>
+                <th>隔离状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>git</code> (Commit Author)</td>
+                <td><code>${escapeHtml(d.git.host_name || '未设置')} &lt;${escapeHtml(d.git.host_email || '')}&gt;</code></td>
+                <td><code>${escapeHtml(d.git.agent_name)} &lt;${escapeHtml(d.git.agent_email)}&gt;</code><br/><small style="color:var(--text-muted)">GIT_CONFIG_GLOBAL=${escapeHtml(d.workspace.gitconfig_path)}</small></td>
+                <td><span class="badge badge-green">已独立隔离</span></td>
+              </tr>
+              <tr>
+                <td><code>gh</code> / <code>gh-agent</code></td>
+                <td><code>${escapeHtml(d.github.host_login)}</code> (<code>~/.config/gh</code>)</td>
+                <td>
+                  当前认证: <code>${escapeHtml(d.github.agent_login)}</code> (预期标识: <code>${escapeHtml(d.github.configured_bot_login)}</code>)<br/>
+                  <small style="color:var(--text-muted)">终态免密交互命令: <code>${escapeHtml(d.github.login_cmd)}</code></small>
+                </td>
+                <td>${ghIsoBadge}</td>
+              </tr>
+              <tr>
+                <td><code>lark-cli</code> / <code>lark-bot</code></td>
+                <td>默认 Profile</td>
+                <td><code>--profile ${escapeHtml(d.feishu.profile || 'default')}</code> (${escapeHtml(d.feishu.bot_name)} · <code>${escapeHtml(d.feishu.bot_open_id || '')}</code>)</td>
+                <td><span class="badge badge-green">已独立隔离</span></td>
+              </tr>
+              <tr>
+                <td><code>gws</code> / <code>dws</code></td>
+                <td>宿主默认目录</td>
+                <td>
+                  <code>GWS_CONFIG_DIR=${escapeHtml(d.workspace.gws_config_dir)}</code> (${escapeHtml(d.gws.account || '未指定账号')})<br/>
+                  <code>DWS_CONFIG_DIR=${escapeHtml(d.workspace.dws_config_dir)}</code> (${escapeHtml(d.dws.profile || '未指定 Profile')})
+                </td>
+                <td><span class="badge badge-green">已独立隔离</span></td>
+              </tr>
+            </tbody>
+          </table>
+        `;
+        if (box1) box1.innerHTML = html;
+        if (box2) box2.innerHTML = html;
+      } catch (e) {
+        if (box1) box1.textContent = '探测失败: ' + e.message;
+        if (box2) box2.textContent = '探测失败: ' + e.message;
+      }
+    }
+
     async function saveConfig() {
       const splitCsv = (s) => s.split(',').map(x => x.trim()).filter(Boolean);
       const jevMode = document.getElementById('cfg-jev-mode').value;
       const jevEnabled = jevMode !== 'heuristic';
       const payload = {
         bot_name: document.getElementById('cfg-bot-name').value.trim(),
+        feishu_profile: document.getElementById('cfg-feishu-profile').value.trim(),
+        github_bot_login: document.getElementById('cfg-github-bot-login').value.trim(),
         reply_in_thread: document.getElementById('cfg-reply-in-thread').value === 'true',
         ack_reaction: document.getElementById('cfg-ack-reaction').value,
         wake_keywords: splitCsv(document.getElementById('cfg-wake-keywords').value),
@@ -1278,6 +1419,14 @@
         github_repos: splitCsv(document.getElementById('cfg-github-repos').value),
         default_repo: document.getElementById('cfg-default-repo').value.trim() || 'xdlkc/nexus',
         allowed_actors: splitCsv(document.getElementById('cfg-allowed-actors').value),
+        agent_identity: {
+          git_user_name: document.getElementById('cfg-git-user-name').value.trim() || 'Nexus Agent (奈克斯)',
+          git_user_email: document.getElementById('cfg-git-user-email').value.trim() || 'nexus-agent@users.noreply.github.com',
+          github_agent_token: document.getElementById('cfg-github-agent-token').value.trim() || null,
+          isolate_gh_config: document.getElementById('cfg-isolate-gh-config').value === 'true',
+          gws_account: document.getElementById('cfg-gws-account').value.trim() || null,
+          dws_profile: document.getElementById('cfg-dws-profile').value.trim() || null,
+        },
         default_target: {
           harness: document.getElementById('cfg-default-harness').value,
           provider: document.getElementById('cfg-default-provider').value.trim() || 'openai',
