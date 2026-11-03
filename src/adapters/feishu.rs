@@ -19,6 +19,10 @@ fn default_wake_keywords() -> Vec<String> {
     vec!["奈克斯".to_owned(), "nexus".to_owned()]
 }
 
+fn default_ack_reaction() -> Option<String> {
+    Some("OnIt".to_owned())
+}
+
 /// Configuration for a Feishu (`lark-cli`) Source & Channel adapter instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeishuAdapterConfig {
@@ -34,6 +38,9 @@ pub struct FeishuAdapterConfig {
     /// Keywords or phrases that wake the agent in a group chat even when not `@`-mentioned.
     #[serde(default = "default_wake_keywords")]
     pub wake_keywords: Vec<String>,
+    /// Emoji reaction (`OnIt`, `OK`, `THUMBSUP`, `EYES`, `Typing`) attached to a user message when processing starts.
+    #[serde(default = "default_ack_reaction")]
+    pub ack_reaction: Option<String>,
 }
 
 impl Default for FeishuAdapterConfig {
@@ -52,6 +59,7 @@ impl Default for FeishuAdapterConfig {
             profile: None,
             reply_in_thread: false,
             wake_keywords: default_wake_keywords(),
+            ack_reaction: default_ack_reaction(),
         }
     }
 }
@@ -100,6 +108,29 @@ impl FeishuAdapter {
             cmd.arg("--profile").arg(profile);
         }
         cmd
+    }
+
+    /// Attaches a Feishu emoji reaction (e.g. `"OnIt"`, `"OK"`, `"THUMBSUP"`) to `message_id` as the bot.
+    pub async fn add_reaction(&self, message_id: &str, emoji_type: &str) -> anyhow::Result<()> {
+        let endpoint = format!("/open-apis/im/v1/messages/{message_id}/reactions");
+        let payload = serde_json::json!({
+            "reaction_type": {
+                "emoji_type": emoji_type
+            }
+        })
+        .to_string();
+
+        let output = self
+            .build_command()
+            .args(["api", "POST", &endpoint, "--data", &payload, "--as", "bot"])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("lark-cli add_reaction failed: {stderr}");
+        }
+        Ok(())
     }
 
     /// Queries `/open-apis/im/v1/chats/<chat_id>/members` via `lark-cli` to sync group member `open_id`s.

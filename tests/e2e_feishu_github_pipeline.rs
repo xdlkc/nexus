@@ -201,8 +201,10 @@ async fn end_to_end_feishu_lark_cli_and_github_gh_closed_loop() {
         assert!(ticket.is_open());
     }
 
-    // Verify Feishu reply was delivered via `lark-cli`
+    // Verify Feishu reaction (`OnIt`) and reply were delivered via `lark-cli`
     let replies_after_tick1 = std::fs::read_to_string(&feishu_replies_log).unwrap();
+    assert!(replies_after_tick1.contains("om_root_100/reactions"));
+    assert!(replies_after_tick1.contains("OnIt"));
     assert!(replies_after_tick1.contains("om_root_100/reply"));
     assert!(replies_after_tick1.contains("PR #42"));
 

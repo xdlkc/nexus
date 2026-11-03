@@ -89,6 +89,7 @@ pub struct SimulateChatPayload {
 pub struct UpdateConfigPayload {
     pub bot_name: Option<String>,
     pub reply_in_thread: Option<bool>,
+    pub ack_reaction: Option<String>,
     pub wake_keywords: Option<Vec<String>>,
     pub chat_ids: Option<Vec<String>>,
     pub github_repos: Option<Vec<String>>,
@@ -192,6 +193,13 @@ async fn handle_update_config(
     }
     if let Some(reply_in_thread) = payload.reply_in_thread {
         cfg.feishu.reply_in_thread = reply_in_thread;
+    }
+    if let Some(ack_reaction) = payload.ack_reaction {
+        cfg.feishu.ack_reaction = if ack_reaction.trim().is_empty() {
+            None
+        } else {
+            Some(ack_reaction.trim().to_owned())
+        };
     }
     if let Some(wake) = payload.wake_keywords {
         cfg.feishu.wake_keywords = wake;

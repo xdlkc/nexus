@@ -254,6 +254,34 @@ where
                                     .and_then(|r| cfg.repositories.get(r))
                                     .or_else(|| cfg.repositories.values().next())
                                     .cloned();
+                                let reaction_msg_id = ticket
+                                    .inputs
+                                    .iter()
+                                    .rev()
+                                    .find_map(|inp| match &inp.kind {
+                                        crate::core::model::TicketInputKind::TriggerFanOut {
+                                            trigger_id,
+                                            ..
+                                        } => eng
+                                            .state
+                                            .triggers
+                                            .get(trigger_id)
+                                            .filter(|tr| {
+                                                tr.source_kind
+                                                    == crate::core::model::SourceKindId::Feishu
+                                            })
+                                            .map(|tr| tr.external_id.clone()),
+                                        _ => None,
+                                    })
+                                    .or_else(|| {
+                                        ticket.channels.iter().find_map(|ch| match ch {
+                                            crate::core::model::ChannelAddress::FeishuTopic {
+                                                reply_to_message_id,
+                                                ..
+                                            } => Some(reply_to_message_id.clone()),
+                                            _ => None,
+                                        })
+                                    });
                                 Some((
                                     priority,
                                     ticket.short_name.clone(),
@@ -262,6 +290,8 @@ where
                                     repo_checkout,
                                     cfg.state_dir.clone(),
                                     format!("http://{}", cfg.http_addr),
+                                    cfg.feishu.clone(),
+                                    reaction_msg_id,
                                 ))
                             } else {
                                 None
@@ -279,6 +309,8 @@ where
                         repo_checkout,
                         state_dir,
                         api_url,
+                        feishu_cfg_for_reaction,
+                        reaction_msg_id,
                     )) = launch_prep
                     else {
                         continue;
@@ -289,6 +321,18 @@ where
                         let mut eng = self.engine.lock().unwrap();
                         eng.state.effects.push(eff);
                         break;
+                    }
+
+                    // Immediately attach an emoji reaction (e.g. `OnIt`) to the Feishu message when processing begins!
+                    if let (Some(msg_id), Some(emoji)) = (
+                        reaction_msg_id.as_deref(),
+                        feishu_cfg_for_reaction
+                            .ack_reaction
+                            .clone()
+                            .filter(|s| !s.trim().is_empty()),
+                    ) {
+                        let adapter = FeishuAdapter::new(feishu_cfg_for_reaction);
+                        let _ = adapter.add_reaction(msg_id, &emoji).await;
                     }
 
                     let wt_path = Path::new(&assign.worktree_dir);

@@ -533,6 +533,17 @@
               </select>
             </div>
             <div class="form-group">
+              <label>开始处理时附加消息表情 (`feishu.ack_reaction`)</label>
+              <select id="cfg-ack-reaction">
+                <option value="OnIt">OnIt (正在处理 🛠)</option>
+                <option value="OK">OK (好的 👌)</option>
+                <option value="THUMBSUP">THUMBSUP (收到 👍)</option>
+                <option value="EYES">EYES (关注中 👀)</option>
+                <option value="Typing">Typing (思考输入中 ⌨️)</option>
+                <option value="">不附加表情</option>
+              </select>
+            </div>
+            <div class="form-group">
               <label>免 `@` 唤醒触发词 (`feishu.wake_keywords`，逗号分隔)</label>
               <input type="text" id="cfg-wake-keywords" placeholder="奈克斯, nexus" />
             </div>
@@ -659,7 +670,7 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('memory-editor').addEventListener('input', () => { memoryDirty = true; });
-      ['cfg-bot-name','cfg-reply-in-thread','cfg-wake-keywords','cfg-chat-ids','cfg-github-repos','cfg-allowed-actors','cfg-default-harness','cfg-default-provider','cfg-default-model','cfg-default-think'].forEach(id => {
+      ['cfg-bot-name','cfg-reply-in-thread','cfg-ack-reaction','cfg-wake-keywords','cfg-chat-ids','cfg-github-repos','cfg-allowed-actors','cfg-default-harness','cfg-default-provider','cfg-default-model','cfg-default-think'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('input', () => { configDirty = true; });
       });
@@ -863,6 +874,7 @@
       if (!configDirty && cfg.feishu) {
         document.getElementById('cfg-bot-name').value = cfg.feishu.bot_name || '';
         document.getElementById('cfg-reply-in-thread').value = cfg.feishu.reply_in_thread ? 'true' : 'false';
+        document.getElementById('cfg-ack-reaction').value = cfg.feishu.ack_reaction || '';
         document.getElementById('cfg-wake-keywords').value = (cfg.feishu.wake_keywords || []).join(', ');
         document.getElementById('cfg-chat-ids').value = (cfg.feishu.chat_ids || []).join(', ');
         document.getElementById('cfg-github-repos').value = (cfg.github && cfg.github.repos || []).join(', ');
@@ -912,6 +924,7 @@
       const payload = {
         bot_name: document.getElementById('cfg-bot-name').value.trim(),
         reply_in_thread: document.getElementById('cfg-reply-in-thread').value === 'true',
+        ack_reaction: document.getElementById('cfg-ack-reaction').value,
         wake_keywords: splitCsv(document.getElementById('cfg-wake-keywords').value),
         chat_ids: splitCsv(document.getElementById('cfg-chat-ids').value),
         github_repos: splitCsv(document.getElementById('cfg-github-repos').value),
