@@ -203,7 +203,11 @@ async fn handle_get_worker_trace(
     let target_ticket = if let Some(tid) = &query.ticket_id {
         eng.state.tickets.get(tid).cloned()
     } else {
-        eng.state.tickets.values().next_back().cloned()
+        eng.state
+            .tickets
+            .values()
+            .max_by(|a, b| a.created_at.cmp(&b.created_at))
+            .cloned()
     };
 
     let Some(ticket) = target_ticket else {

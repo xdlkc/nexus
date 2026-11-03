@@ -759,6 +759,8 @@
     let memoryDirty = false;
     let configDirty = false;
     let selectedTraceTicketId = null;
+    let expandedInlineTicketId = null;
+    let inlineTraceCache = {};
 
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('memory-editor').addEventListener('input', () => { memoryDirty = true; });
@@ -844,11 +846,23 @@
       if (tabId === 'trajectory') fetchWorkerTrace();
     }
 
-    function inspectTrajectory(ticketId) {
+    async function inspectTrajectory(ticketId) {
       selectedTraceTicketId = ticketId;
       const sel = document.getElementById('trace-ticket-select');
       if (sel) sel.value = ticketId;
-      switchTab('trajectory', document.getElementById('nav-btn-trajectory'));
+      if (expandedInlineTicketId === ticketId) {
+        expandedInlineTicketId = null;
+        if (latestOverview) renderOverview(latestOverview);
+        return;
+      }
+      expandedInlineTicketId = ticketId;
+      const res = await fetch('/api/worker/trace?ticket_id=' + encodeURIComponent(ticketId));
+      const data = await res.json();
+      if (data.ok) {
+        inlineTraceCache[ticketId] = data.steps || [];
+      }
+      if (latestOverview) renderOverview(latestOverview);
+      fetchWorkerTrace();
     }
 
     function onSelectTraceTicket(ticketId) {
@@ -947,9 +961,9 @@
     function renderOverview(data) {
       const state = data.state || {};
       const cfg = data.config || {};
-      const tickets = Object.values(state.tickets || {}).reverse();
+      const tickets = Object.values(state.tickets || {}).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
       const triggers = Object.values(state.triggers || {});
-      const decisions = Object.values(state.decisions || {}).reverse();
+      const decisions = Object.values(state.decisions || {}).sort((a, b) => (b.at || '').localeCompare(a.at || ''));
       const outbox = Object.values(state.outbox || {});
       const threads = Object.values(state.threads || {});
       const effects = state.effects || [];
@@ -981,7 +995,7 @@
       // Populate Trajectory ticket dropdown
       const traceSel = document.getElementById('trace-ticket-select');
       if (traceSel) {
-        const prev = selectedTraceTicketId || traceSel.value || (tickets[0] && tickets[0].id) || '';
+        const prev = selectedTraceTicketId || (tickets[0] && tickets[0].id) || '';
         traceSel.innerHTML = tickets.map(t =>
           `<option value="${escapeHtml(t.id)}">${escapeHtml(t.id)} · ${escapeHtml((t.title || '').slice(0, 36))}</option>`
         ).join('');
@@ -1013,6 +1027,29 @@
           const prLink = report.pull_request_url
             ? `<div style="margin-top:0.25rem"><a href="${escapeHtml(report.pull_request_url)}" target="_blank" style="color:var(--accent)">查看 PR ↗</a></div>`
             : '';
+          const isExpanded = expandedInlineTicketId === t.id;
+          const cachedSteps = inlineTraceCache[t.id] || [];
+          const inlineTraceRow = isExpanded
+            ? `<tr>
+                <td colspan="6" style="background:#0b1120; padding:0.9rem 1.1rem; border-left:3px solid var(--accent)">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.65rem">
+                    <strong>🔍 工单 <code>${escapeHtml(t.id)}</code> Worker 内部执行轨迹 (${cachedSteps.length} 步)</strong>
+                    <button class="btn btn-sm" onclick="switchTab('trajectory', document.getElementById('nav-btn-trajectory'))">在全屏轨迹页打开 ↗</button>
+                  </div>
+                  <div class="timeline" style="max-height:420px; overflow-y:auto">
+                    ${cachedSteps.map(s => `
+                      <div class="chat-item ${s.kind === 'thinking' || s.kind === 'finish' ? 'bot' : 'user'}" style="padding:0.55rem 0.75rem">
+                        <div class="chat-meta">
+                          <span><strong>#${s.seq}</strong> <span class="badge badge-blue">${escapeHtml(s.kind.toUpperCase())}</span> <strong>${escapeHtml(s.title)}</strong></span>
+                          <span>${escapeHtml(s.at)}</span>
+                        </div>
+                        <pre style="margin:0.3rem 0 0 0; white-space:pre-wrap; word-break:break-word; max-height:180px; overflow-y:auto; font-size:0.78rem">${escapeHtml(s.detail)}</pre>
+                      </div>
+                    `).join('')}
+                  </div>
+                </td>
+              </tr>`
+            : '';
           return `<tr>
             <td><code>${escapeHtml(t.id)}</code><div style="font-size:0.74rem;color:var(--text-muted);margin-top:0.2rem">${escapeHtml(t.short_name)}</div></td>
             <td><strong>${escapeHtml(t.title)}</strong><div style="font-size:0.76rem;color:var(--text-muted)">${escapeHtml(t.repo || 'default')}</div></td>
@@ -1021,12 +1058,12 @@
             <td style="max-width:380px; white-space:pre-wrap">${summaryText}${prLink}</td>
             <td>
               <div style="display:flex; gap:0.4rem; flex-wrap:wrap">
-                <button class="btn btn-sm btn-primary" onclick="inspectTrajectory('${escapeHtml(t.id)}')">查看轨迹</button>
+                <button class="btn btn-sm btn-primary" onclick="inspectTrajectory('${escapeHtml(t.id)}')">${isExpanded ? '收起轨迹' : '查看轨迹'}</button>
                 <button class="btn btn-sm" onclick="openSwitchModal('${escapeHtml(t.id)}', '${escapeHtml(target.harness || 'codex')}', '${escapeHtml(target.provider || 'openai')}', '${escapeHtml(target.model || 'gpt-6-astra')}', '${escapeHtml(target.think_effort || 'high')}')">切换引擎</button>
                 ${isOpen ? `<button class="btn btn-sm btn-danger" onclick="stopTicket('${escapeHtml(t.id)}')">终止</button>` : ''}
               </div>
             </td>
-          </tr>`;
+          </tr>${inlineTraceRow}`;
         }).join('');
       }
 
