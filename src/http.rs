@@ -103,6 +103,8 @@ pub struct UpdateConfigPayload {
     pub ack_reaction: Option<String>,
     pub wake_keywords: Option<Vec<String>>,
     pub chat_ids: Option<Vec<String>>,
+    pub dingtalk_chat_ids: Option<Vec<String>>,
+    pub dingtalk_robot_code: Option<String>,
     pub github_repos: Option<Vec<String>>,
     pub default_repo: Option<String>,
     pub allowed_actors: Option<Vec<String>>,
@@ -418,10 +420,21 @@ async fn handle_update_config(
         };
     }
     if let Some(wake) = payload.wake_keywords {
-        cfg.feishu.wake_keywords = wake;
+        cfg.feishu.wake_keywords = wake.clone();
+        cfg.dingtalk.wake_keywords = wake;
     }
     if let Some(chats) = payload.chat_ids {
         cfg.feishu.chat_ids = chats;
+    }
+    if let Some(dt_chats) = payload.dingtalk_chat_ids {
+        cfg.dingtalk.chat_ids = dt_chats;
+    }
+    if let Some(dt_robot) = payload.dingtalk_robot_code {
+        cfg.dingtalk.robot_code = if dt_robot.trim().is_empty() {
+            None
+        } else {
+            Some(dt_robot.trim().to_owned())
+        };
     }
     if let Some(repos) = payload.github_repos {
         cfg.github.repos = repos;
@@ -624,7 +637,10 @@ async fn handle_identity_status(State(app): State<SharedAppState>) -> Json<serde
             "isolated": true,
         },
         "dws": {
-            "profile": cfg.agent_identity.dws_profile,
+            "profile": cfg.agent_identity.dws_profile.or(cfg.dingtalk.profile),
+            "robot_code": cfg.dingtalk.robot_code,
+            "bot_open_id": cfg.dingtalk.bot_open_id,
+            "chat_ids": cfg.dingtalk.chat_ids,
             "config_dir": dws_home,
             "isolated": true,
         }

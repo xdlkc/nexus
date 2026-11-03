@@ -2,6 +2,7 @@
 
 use crate::adapters::feishu::FeishuAdapterConfig;
 use crate::adapters::github::GithubAdapterConfig;
+use crate::adapters::im_channels::DingtalkAdapterConfig;
 use crate::core::gate::SourceAdmissionPolicy;
 use crate::core::model::{AcceptMode, AdmissionStrength, ProactiveRule};
 use crate::router::jev_http::HttpJevConfig;
@@ -58,6 +59,8 @@ pub struct NexusConfig {
     pub accept_mode: AcceptMode,
     pub max_concurrent_workers: usize,
     pub feishu: FeishuAdapterConfig,
+    #[serde(default)]
+    pub dingtalk: DingtalkAdapterConfig,
     pub github: GithubAdapterConfig,
     #[serde(default)]
     pub agent_identity: AgentIdentityConfig,
@@ -81,6 +84,7 @@ impl NexusConfig {
             accept_mode: AcceptMode::Auto,
             max_concurrent_workers: 4,
             feishu: FeishuAdapterConfig::default(),
+            dingtalk: DingtalkAdapterConfig::default(),
             github: GithubAdapterConfig::default(),
             agent_identity: AgentIdentityConfig::default(),
             default_repo: Some("xdlkc/nexus".to_owned()),

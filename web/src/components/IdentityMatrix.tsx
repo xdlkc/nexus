@@ -152,30 +152,34 @@ export const IdentityMatrix: React.FC<{
           </div>
         </div>
 
-        {/* GWS / DWS Sandbox Card */}
+        {/* DingTalk / GWS Sandbox Card */}
         <div className="rounded-xl border border-slate-800/90 bg-[#080b11]/90 p-3.5 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-200">
-                <FolderLock className="w-4 h-4 text-purple-400" /> GWS / DWS 独立配置舱
+                <FolderLock className="w-4 h-4 text-purple-400" /> 钉钉 (`dws`) &amp; GWS
               </span>
               <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
-                <CheckCircle2 className="w-3 h-3" /> 已隔离
+                <CheckCircle2 className="w-3 h-3" /> 已就绪
               </span>
             </div>
             <div className="space-y-1.5 text-xs mt-2">
               <div className="flex items-center justify-between text-slate-400">
-                <span>Google Workspace:</span>
-                <code className="text-purple-300">{status.gws.account || 'agent-home/gws'}</code>
+                <span>钉钉 RobotCode:</span>
+                <code className="text-emerald-300 font-semibold">
+                  {status.dws.robot_code || 'dingztmnesaskuiyqfup'}
+                </code>
               </div>
               <div className="flex items-center justify-between text-slate-400">
-                <span>钉钉 DWS Profile:</span>
-                <code className="text-purple-300">{status.dws.profile || 'agent-home/dws'}</code>
+                <span>钉钉组织 Profile:</span>
+                <code className="text-purple-300 truncate max-w-[140px]" title={status.dws.profile || ''}>
+                  {status.dws.profile || 'Lkc (已登录)'}
+                </code>
               </div>
             </div>
           </div>
           <div className="mt-3 pt-2.5 border-t border-slate-800/80 text-[11px] text-slate-500 font-mono truncate">
-            GWS_CONFIG_DIR &amp; DWS_CONFIG_DIR
+            群 ID: {(status.dws.chat_ids || []).join(', ') || 'cidrlrbHu3h3bSaJWi6oDzOKA=='}
           </div>
         </div>
       </div>

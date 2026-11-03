@@ -193,17 +193,25 @@ pub fn provision_agent_workspace_from_config(cfg: &NexusConfig) -> anyhow::Resul
         "#!/usr/bin/env zsh".to_owned(),
         "set -e".to_owned(),
         CLEAN_PATH_EXPORT.to_owned(),
-        format!("export DWS_CONFIG_DIR='{}'", dws_home.display()),
     ];
-    if let Some(prof) = &cfg.agent_identity.dws_profile
-        && !prof.trim().is_empty()
-    {
-        dws_lines.push(format!(
-            "export DWS_PROFILE='{}'",
-            prof.replace('\'', "'\\''")
-        ));
+    if dws_home.join("profiles.json").exists() {
+        dws_lines.push(format!("export DWS_CONFIG_DIR='{}'", dws_home.display()));
     }
-    dws_lines.push("exec dws \"$@\"".to_owned());
+    let effective_dws_profile = cfg
+        .agent_identity
+        .dws_profile
+        .as_ref()
+        .or(cfg.dingtalk.profile.as_ref())
+        .filter(|s| !s.trim().is_empty());
+    if let Some(prof) = effective_dws_profile {
+        let escaped = prof.replace('\'', "'\\''");
+        dws_lines.push(format!("export DWS_PROFILE='{escaped}'"));
+        dws_lines.push(format!(
+            "if [[ \" $* \" == *\" --profile \"* ]]; then\n  exec dws \"$@\"\nelse\n  exec dws --profile '{escaped}' \"$@\"\nfi"
+        ));
+    } else {
+        dws_lines.push("exec dws \"$@\"".to_owned());
+    }
     let dws_script = format!("{}\n", dws_lines.join("\n"));
     write_executable(&shims.dws_agent_path, &dws_script)?;
     write_executable(&shims.worker_bin_dir.join("dws"), &dws_script)?;

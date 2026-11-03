@@ -98,6 +98,8 @@ export default function App() {
   const [ackReaction, setAckReaction] = useState('OnIt');
   const [wakeKeywords, setWakeKeywords] = useState('奈克斯, nexus');
   const [chatIds, setChatIds] = useState('');
+  const [dingtalkChatIds, setDingtalkChatIds] = useState('cidrlrbHu3h3bSaJWi6oDzOKA==');
+  const [dingtalkRobotCode, setDingtalkRobotCode] = useState('dingztmnesaskuiyqfup');
   const [githubRepos, setGithubRepos] = useState('xdlkc/nexus, xdlkc/clipboard-history');
   const [defaultRepo, setDefaultRepo] = useState('xdlkc/nexus');
   const [allowedActors, setAllowedActors] = useState('');
@@ -146,6 +148,8 @@ export default function App() {
         setAckReaction(c.feishu?.ack_reaction || '');
         setWakeKeywords((c.feishu?.wake_keywords || []).join(', '));
         setChatIds((c.feishu?.chat_ids || []).join(', '));
+        setDingtalkChatIds((c.dingtalk?.chat_ids || []).join(', '));
+        setDingtalkRobotCode(c.dingtalk?.robot_code || 'dingztmnesaskuiyqfup');
         setGithubRepos((c.github?.repos || []).join(', '));
         setDefaultRepo(c.default_repo || 'xdlkc/nexus');
         setAllowedActors((c.allowed_actors || []).join(', '));
@@ -301,6 +305,8 @@ export default function App() {
       ack_reaction: ackReaction,
       wake_keywords: splitCsv(wakeKeywords),
       chat_ids: splitCsv(chatIds),
+      dingtalk_chat_ids: splitCsv(dingtalkChatIds),
+      dingtalk_robot_code: dingtalkRobotCode.trim(),
       github_repos: splitCsv(githubRepos),
       default_repo: defaultRepo.trim() || 'xdlkc/nexus',
       allowed_actors: splitCsv(allowedActors),
@@ -578,8 +584,8 @@ export default function App() {
               accent="amber"
             />
             <KpiCard
-              title="监听仓库 & 飞书群"
-              value={`${overview?.config?.github?.repos?.length || 0} Repos · ${overview?.config?.feishu?.chat_ids?.length || 0} Chats`}
+              title="监听仓库 · 飞书群 · 钉钉群"
+              value={`${overview?.config?.github?.repos?.length || 0} Repos · ${overview?.config?.feishu?.chat_ids?.length || 0} 飞书 · ${overview?.config?.dingtalk?.chat_ids?.length || 0} 钉钉`}
               subtitle={(overview?.config?.github?.repos || []).join(' · ')}
               icon={<GitPullRequest className="w-4 h-4 text-cyan-400" />}
               accent="cyan"
@@ -1093,12 +1099,12 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Section 2: Repositories & Feishu Wake */}
+                {/* Section 2: Repositories, Feishu & DingTalk Wake */}
                 <div>
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-cyan-400 mb-3">
-                    2. 仓库绑定与飞书群唤醒配置
+                    2. 仓库绑定、飞书群与钉钉群唤醒配置
                   </h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     <FormField label="绑定 GitHub 仓库 (`github.repos`，逗号分隔)">
                       <input
                         type="text"
@@ -1132,12 +1138,34 @@ export default function App() {
                         className="form-input"
                       />
                     </FormField>
-                    <FormField label="接单消息表情 (`ack_reaction`)">
+                    <FormField label="飞书监听群 ID (`feishu.chat_ids`)">
                       <input
                         type="text"
-                        value={ackReaction}
+                        value={chatIds}
                         onChange={(e) => {
-                          setAckReaction(e.target.value);
+                          setChatIds(e.target.value);
+                          setCfgDirty(true);
+                        }}
+                        className="form-input"
+                      />
+                    </FormField>
+                    <FormField label="钉钉监听群 ID (`dingtalk.chat_ids`)">
+                      <input
+                        type="text"
+                        value={dingtalkChatIds}
+                        onChange={(e) => {
+                          setDingtalkChatIds(e.target.value);
+                          setCfgDirty(true);
+                        }}
+                        className="form-input"
+                      />
+                    </FormField>
+                    <FormField label="钉钉机器人 Code (`dingtalk.robot_code`)">
+                      <input
+                        type="text"
+                        value={dingtalkRobotCode}
+                        onChange={(e) => {
+                          setDingtalkRobotCode(e.target.value);
                           setCfgDirty(true);
                         }}
                         className="form-input"

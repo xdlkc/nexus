@@ -128,6 +128,16 @@ export interface NexusConfig {
     wake_keywords: string[];
     ack_reaction?: string | null;
   };
+  dingtalk?: {
+    source_id: string;
+    chat_ids: string[];
+    robot_code?: string | null;
+    bot_open_id?: string | null;
+    bot_name: string;
+    profile?: string | null;
+    wake_keywords: string[];
+    ack_reaction?: string | null;
+  };
   github: {
     source_id: string;
     repos: string[];
@@ -227,6 +237,9 @@ export interface IdentityStatusResponse {
   };
   dws: {
     profile?: string | null;
+    robot_code?: string | null;
+    bot_open_id?: string | null;
+    chat_ids?: string[];
     config_dir: string;
     isolated: boolean;
   };

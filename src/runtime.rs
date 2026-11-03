@@ -3,6 +3,7 @@
 
 use crate::adapters::feishu::FeishuAdapter;
 use crate::adapters::github::GithubAdapter;
+use crate::adapters::im_channels::DingtalkAdapter;
 use crate::adapters::traits::{ChannelAdapter, SourceAdapter};
 use crate::config::NexusConfig;
 use crate::core::engine::Engine;
@@ -87,7 +88,7 @@ where
         summary: &mut RuntimeTickSummary,
         now: &str,
     ) -> anyhow::Result<()> {
-        let ( mut feishu_cfg, mut github_cfg, policy, accept_mode) = {
+        let (mut feishu_cfg, mut dingtalk_cfg, mut github_cfg, policy, accept_mode) = {
             let cfg = self.config.lock().unwrap();
             let eng = self.engine.lock().unwrap();
             let mut g_cfg = cfg.github.clone();
@@ -112,6 +113,7 @@ where
             }
             (
                 cfg.feishu.clone(),
+                cfg.dingtalk.clone(),
                 g_cfg,
                 cfg.admission_policy(),
                 eng.state.accept_mode.unwrap_or(cfg.accept_mode),
@@ -124,6 +126,32 @@ where
                 .store
                 .get_cursor(&feishu_cfg.source_id, "latest_create_time_ms")?;
             let adapter = FeishuAdapter::new(std::mem::take(&mut feishu_cfg));
+            if let Ok(poll_out) = adapter.poll(cursor.as_deref()).await {
+                let mut eng = self.engine.lock().unwrap();
+                for trig in poll_out.triggers {
+                    let strength = evaluate_gate_strength(
+                        &trig.actor_id,
+                        trig.actor_is_bot,
+                        trig.addressed_agent,
+                        &policy,
+                        accept_mode,
+                    );
+                    eng.receive_trigger(trig, strength);
+                    summary.polled_triggers += 1;
+                }
+                for (ck, cv) in poll_out.updated_cursors {
+                    let _ = self.store.set_cursor(adapter.source_id(), &ck, &cv, now);
+                }
+                self.store.save_engine_state(&eng.state, now)?;
+            }
+        }
+
+        // 1b. Poll DingTalk (`dws`) if chats or robot_code are configured
+        if !dingtalk_cfg.chat_ids.is_empty() || dingtalk_cfg.robot_code.is_some() {
+            let cursor = self
+                .store
+                .get_cursor(&dingtalk_cfg.source_id, "latest_create_time")?;
+            let adapter = DingtalkAdapter::new(std::mem::take(&mut dingtalk_cfg));
             if let Ok(poll_out) = adapter.poll(cursor.as_deref()).await {
                 let mut eng = self.engine.lock().unwrap();
                 for trig in poll_out.triggers {
@@ -292,6 +320,20 @@ where
                                             _ => None,
                                         })
                                     });
+                                let dingtalk_reaction_target =
+                                    ticket.channels.iter().find_map(|ch| match ch {
+                                        crate::core::model::ChannelAddress::GenericIm {
+                                            source_kind: crate::core::model::SourceKindId::Dingtalk,
+                                            conversation_id,
+                                            thread_id: Some(thread_id),
+                                            ..
+                                        } => {
+                                            let msg_id =
+                                                thread_id.split('|').next().unwrap_or(thread_id);
+                                            Some((conversation_id.clone(), msg_id.to_owned()))
+                                        }
+                                        _ => None,
+                                    });
                                 let reply_channel_for_progress =
                                     ticket.channels.first().cloned();
                                 Some((
@@ -303,7 +345,9 @@ where
                                     cfg.state_dir.clone(),
                                     format!("http://{}", cfg.http_addr),
                                     cfg.feishu.clone(),
+                                    cfg.dingtalk.clone(),
                                     reaction_msg_id,
+                                    dingtalk_reaction_target,
                                     reply_channel_for_progress,
                                 ))
                             } else {
@@ -323,7 +367,9 @@ where
                         state_dir,
                         api_url,
                         feishu_cfg_for_reaction,
+                        dingtalk_cfg_for_reaction,
                         reaction_msg_id,
+                        dingtalk_reaction_target,
                         reply_channel_for_progress,
                     )) = launch_prep
                     else {
@@ -349,6 +395,18 @@ where
                         let _ = adapter.add_reaction(msg_id, &emoji).await;
                     }
 
+                    // Immediately attach an emoji reaction (e.g. `OK`) to the DingTalk message when processing begins!
+                    if let (Some((conv_id, msg_id)), Some(emoji)) = (
+                        dingtalk_reaction_target.as_ref(),
+                        dingtalk_cfg_for_reaction
+                            .ack_reaction
+                            .clone()
+                            .filter(|s| !s.trim().is_empty()),
+                    ) {
+                        let adapter = DingtalkAdapter::new(dingtalk_cfg_for_reaction.clone());
+                        let _ = adapter.add_reaction(conv_id, msg_id, &emoji).await;
+                    }
+
                     let wt_path = Path::new(&assign.worktree_dir);
                     let _ = prepare_worktree(repo_checkout.as_deref(), wt_path, &short_name).await;
 
@@ -358,10 +416,12 @@ where
                     let progress_store = Arc::clone(&self.store);
                     let progress_ticket_id = ticket_id.clone();
                     let progress_feishu_cfg = feishu_cfg_for_reaction;
+                    let progress_dingtalk_cfg = dingtalk_cfg_for_reaction;
                     let progress_channel = reply_channel_for_progress;
 
                     let progress_forwarder = tokio::spawn(async move {
-                        let adapter = FeishuAdapter::new(progress_feishu_cfg);
+                        let feishu_adapter = FeishuAdapter::new(progress_feishu_cfg);
+                        let dingtalk_adapter = DingtalkAdapter::new(progress_dingtalk_cfg);
                         while let Some(note) = progress_rx.recv().await {
                             let ts = chrono::Utc::now().to_rfc3339();
                             {
@@ -377,9 +437,7 @@ where
                                 );
                                 let _ = progress_store.save_engine_state(&eng.state, &ts);
                             }
-                            if let Some(ch) = &progress_channel
-                                && adapter.can_deliver(ch)
-                            {
+                            if let Some(ch) = &progress_channel {
                                 let msg = crate::core::model::OutboxMessage {
                                     id: format!("prog-{}", chrono::Utc::now().timestamp_millis()),
                                     ticket_id: Some(progress_ticket_id.clone()),
@@ -391,7 +449,11 @@ where
                                     last_error: None,
                                     created_at: ts,
                                 };
-                                let _ = adapter.send_message(&msg).await;
+                                if feishu_adapter.can_deliver(ch) {
+                                    let _ = feishu_adapter.send_message(&msg).await;
+                                } else if dingtalk_adapter.can_deliver(ch) {
+                                    let _ = dingtalk_adapter.send_message(&msg).await;
+                                }
                             }
                         }
                     });
@@ -478,7 +540,7 @@ where
                         continue;
                     };
 
-                    let (feishu_cfg, github_cfg) = {
+                    let (feishu_cfg, dingtalk_cfg, github_cfg) = {
                         let cfg = self.config.lock().unwrap();
                         let mut g_cfg = cfg.github.clone();
                         if g_cfg.gh_bin == Path::new("gh") {
@@ -489,13 +551,16 @@ where
                                 g_cfg.gh_bin = gh_agent;
                             }
                         }
-                        (cfg.feishu.clone(), g_cfg)
+                        (cfg.feishu.clone(), cfg.dingtalk.clone(), g_cfg)
                     };
                     let feishu_adapter = FeishuAdapter::new(feishu_cfg);
+                    let dingtalk_adapter = DingtalkAdapter::new(dingtalk_cfg);
                     let github_adapter = GithubAdapter::new(github_cfg);
 
                     let send_res = if feishu_adapter.can_deliver(&msg.channel) {
                         feishu_adapter.send_message(&msg).await
+                    } else if dingtalk_adapter.can_deliver(&msg.channel) {
+                        dingtalk_adapter.send_message(&msg).await
                     } else if github_adapter.can_deliver(&msg.channel) {
                         github_adapter.send_message(&msg).await
                     } else {

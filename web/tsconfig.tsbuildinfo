@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/api/client.ts","./src/components/identitymatrix.tsx","./src/components/stepbadge.tsx","./src/types/nexus.ts"],"version":"5.8.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/api/client.ts","./src/components/identitymatrix.tsx","./src/components/searchableselect.tsx","./src/components/stepbadge.tsx","./src/types/nexus.ts"],"version":"5.8.3"}
