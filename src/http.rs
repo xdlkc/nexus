@@ -14,6 +14,7 @@ use crate::router::jev::{
 };
 use crate::router::jev_http::{HeuristicJevClassifier, HttpJevClient, HttpJevConfig};
 use crate::router::orchestrator::RouterLlmConfig;
+use crate::workers::driver::{WorkerTraceStep, read_worker_trace_steps};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -110,6 +111,12 @@ pub struct TestJevPayload {
     pub text: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WorkerTraceQuery {
+    pub ticket_id: Option<String>,
+    pub assignment_id: Option<String>,
+}
+
 /// Builds the `axum::Router` for the management console and worker-callback HTTP server.
 pub fn build_http_router(state: SharedAppState) -> Router {
     Router::new()
@@ -125,6 +132,7 @@ pub fn build_http_router(state: SharedAppState) -> Router {
         .route("/api/memory", get(handle_get_memory).post(handle_save_memory))
         .route("/api/worker/report", post(handle_worker_report))
         .route("/api/worker/read", get(handle_worker_read))
+        .route("/api/worker/trace", get(handle_get_worker_trace))
         .route("/api/worker/handback", post(handle_worker_handback))
         .route(
             "/api/worker/switch-target",
@@ -170,6 +178,121 @@ async fn handle_get_tickets(State(app): State<SharedAppState>) -> Json<serde_jso
     let eng = app.engine.lock().unwrap();
     let list: Vec<_> = eng.state.tickets.values().cloned().collect();
     Json(serde_json::json!({ "tickets": list }))
+}
+
+async fn handle_get_worker_trace(
+    State(app): State<SharedAppState>,
+    Query(query): Query<WorkerTraceQuery>,
+) -> Json<serde_json::Value> {
+    let state_dir = app.config.lock().unwrap().state_dir.clone();
+    let eng = app.engine.lock().unwrap();
+
+    let target_ticket = if let Some(tid) = &query.ticket_id {
+        eng.state.tickets.get(tid).cloned()
+    } else {
+        eng.state.tickets.values().next_back().cloned()
+    };
+
+    let Some(ticket) = target_ticket else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "steps": [],
+        }));
+    };
+
+    let mut steps: Vec<WorkerTraceStep> = Vec::new();
+    for asg in &ticket.assignments {
+        if let Some(filter_asg) = &query.assignment_id
+            && &asg.id != filter_asg
+        {
+            continue;
+        }
+        let disk_steps = read_worker_trace_steps(&state_dir, &asg.id);
+        if !disk_steps.is_empty() {
+            steps.extend(disk_steps);
+        } else {
+            // Synthesize trajectory for historical assignments that ran before JSONL trace persistence
+            let mut seq = 1usize;
+            let input_preview = ticket
+                .inputs
+                .iter()
+                .map(|inp| format!("{:?}", inp.kind))
+                .collect::<Vec<_>>()
+                .join("\n");
+            steps.push(WorkerTraceStep {
+                seq,
+                at: asg.started_at.clone(),
+                assignment_id: asg.id.clone(),
+                ticket_id: ticket.id.clone(),
+                kind: "launch".to_owned(),
+                title: format!(
+                    "启动 Worker `{}` ({}:{}/{}:{})",
+                    asg.id,
+                    asg.target.harness.as_str(),
+                    asg.target.provider,
+                    asg.target.model,
+                    asg.target.think_effort.as_str()
+                ),
+                detail: format!(
+                    "Ticket: {} ({})\nWorktree: {}\nInputs:\n{}",
+                    ticket.id, ticket.title, asg.worktree_dir, input_preview
+                ),
+            });
+
+            for ob in eng
+                .state
+                .outbox
+                .values()
+                .filter(|o| o.ticket_id.as_deref() == Some(&ticket.id))
+            {
+                seq += 1;
+                let is_thinking = ob.body.starts_with("💭");
+                steps.push(WorkerTraceStep {
+                    seq,
+                    at: ob.created_at.clone(),
+                    assignment_id: asg.id.clone(),
+                    ticket_id: ticket.id.clone(),
+                    kind: if is_thinking {
+                        "thinking".to_owned()
+                    } else {
+                        "message".to_owned()
+                    },
+                    title: if is_thinking {
+                        "实时思考播报 (Progress Note)".to_owned()
+                    } else {
+                        format!("Outbox 回复投递 ({}, {:?})", ob.id, ob.status)
+                    },
+                    detail: ob.body.clone(),
+                });
+            }
+
+            if let Some(rep) = &asg.latest_report {
+                seq += 1;
+                steps.push(WorkerTraceStep {
+                    seq,
+                    at: rep.at.clone(),
+                    assignment_id: asg.id.clone(),
+                    ticket_id: ticket.id.clone(),
+                    kind: if rep.status == ReportStatus::Failed {
+                        "error".to_owned()
+                    } else {
+                        "finish".to_owned()
+                    },
+                    title: format!("Worker 执行完成 (status={:?})", rep.status),
+                    detail: rep.summary.clone(),
+                });
+            }
+        }
+    }
+
+    Json(serde_json::json!({
+        "ok": true,
+        "ticket_id": ticket.id,
+        "title": ticket.title,
+        "short_name": ticket.short_name,
+        "assignments": ticket.assignments,
+        "steps": steps,
+    }))
 }
 
 async fn handle_stop_ticket(

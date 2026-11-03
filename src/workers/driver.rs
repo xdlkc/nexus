@@ -99,6 +99,65 @@ pub struct WorkerExecutionResult {
     pub raw_output: String,
 }
 
+/// A single chronological event in a Worker Assignment's execution trajectory (`<state_dir>/traces/<assignment_id>.jsonl`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerTraceStep {
+    pub seq: usize,
+    pub at: String,
+    pub assignment_id: String,
+    pub ticket_id: String,
+    /// Step category: `"launch"`, `"thinking"`, `"tool_call"`, `"tool_result"`, `"usage"`, `"finish"`, `"error"`
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+}
+
+/// Appends a single `WorkerTraceStep` to `<state_dir>/traces/<assignment_id>.jsonl` in real time.
+pub fn append_worker_trace_step(
+    state_dir: &Path,
+    seq: &mut usize,
+    assignment_id: &str,
+    ticket_id: &str,
+    kind: &str,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+) {
+    *seq += 1;
+    let step = WorkerTraceStep {
+        seq: *seq,
+        at: chrono::Utc::now().to_rfc3339(),
+        assignment_id: assignment_id.to_owned(),
+        ticket_id: ticket_id.to_owned(),
+        kind: kind.to_owned(),
+        title: title.into(),
+        detail: detail.into(),
+    };
+    let traces_dir = state_dir.join("traces");
+    let _ = std::fs::create_dir_all(&traces_dir);
+    let path = traces_dir.join(format!("{assignment_id}.jsonl"));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        && let Ok(line) = serde_json::to_string(&step)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+/// Reads all persisted `WorkerTraceStep`s from `<state_dir>/traces/<assignment_id>.jsonl`.
+pub fn read_worker_trace_steps(state_dir: &Path, assignment_id: &str) -> Vec<WorkerTraceStep> {
+    let path = state_dir.join("traces").join(format!("{assignment_id}.jsonl"));
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<WorkerTraceStep>(line).ok())
+        .collect()
+}
+
 /// Command line specification constructed for an external CLI Worker Harness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliHarnessSpec {
@@ -475,6 +534,7 @@ pub async fn run_pi_native_worker<L: LlmClient>(
     ];
     let tools = pi_native_tool_specs();
     let mut last_text = String::new();
+    let mut trace_seq = 0usize;
 
     for _ in 0..ctx.max_turns.max(1) {
         let resp = llm
@@ -488,7 +548,34 @@ pub async fn run_pi_native_worker<L: LlmClient>(
             })
             .await?;
 
+        if trace_seq == 0 {
+            append_worker_trace_step(
+                &ctx.state_dir,
+                &mut trace_seq,
+                &ctx.assignment_id,
+                &ctx.ticket_id,
+                "launch",
+                format!(
+                    "启动 Worker `{}` (pi-native:{}/{}:{})",
+                    ctx.assignment_id,
+                    ctx.target.provider,
+                    ctx.target.model,
+                    current_effort.as_str()
+                ),
+                format!("Worktree: {}\n\n{}", ctx.worktree_dir.display(), ctx.prompt),
+            );
+        }
+
         if !resp.content.is_empty() {
+            append_worker_trace_step(
+                &ctx.state_dir,
+                &mut trace_seq,
+                &ctx.assignment_id,
+                &ctx.ticket_id,
+                "thinking",
+                format!("pi-native 思考输出 (effort={})", current_effort.as_str()),
+                &resp.content,
+            );
             last_text = resp.content.clone();
         }
         if resp.tool_calls.is_empty() {
@@ -517,6 +604,15 @@ pub async fn run_pi_native_worker<L: LlmClient>(
         ));
 
         for tc in resp.tool_calls {
+            append_worker_trace_step(
+                &ctx.state_dir,
+                &mut trace_seq,
+                &ctx.assignment_id,
+                &ctx.ticket_id,
+                "tool_call",
+                format!("调用工具: {}", tc.name),
+                serde_json::to_string_pretty(&tc.arguments).unwrap_or_default(),
+            );
             match tc.name.as_str() {
                 "worker_report" => {
                     let status_str = tc
@@ -771,6 +867,30 @@ pub async fn run_cli_harness_worker(
     let mut reader = BufReader::new(stdout_pipe).lines();
     let mut pending_agent_thought: Option<String> = None;
     let mut sent_progress_count = 0usize;
+    let mut trace_seq = 0usize;
+
+    append_worker_trace_step(
+        &ctx.state_dir,
+        &mut trace_seq,
+        &ctx.assignment_id,
+        &ctx.ticket_id,
+        "launch",
+        format!(
+            "启动 Worker `{}` ({}:{}/{}:{})",
+            ctx.assignment_id,
+            ctx.target.harness.as_str(),
+            ctx.target.provider,
+            ctx.target.model,
+            ctx.target.think_effort.as_str()
+        ),
+        format!(
+            "Worktree: {}\nProgram: {} {}\n\n{}",
+            ctx.worktree_dir.display(),
+            spec.program,
+            spec.args.iter().take(6).cloned().collect::<Vec<_>>().join(" "),
+            ctx.prompt
+        ),
+    );
 
     while let Ok(Some(line)) = reader.next_line().await {
         stdout_buf.push_str(&line);
@@ -789,20 +909,93 @@ pub async fn run_cli_harness_worker(
                     .unwrap_or("")
                     .trim();
                 if item_type == "agent_message" && !item_text.is_empty() {
-                    pending_agent_thought = Some(item_text.to_owned());
-                } else if item_type == "reasoning"
-                    && !item_text.is_empty()
-                    && sent_progress_count < 3
-                    && let Some(tx) = &ctx.progress_tx
-                {
-                    let note = crate::core::recall::truncate_to_im_word_limit(
-                        &format!("💭 {item_text}"),
-                        85,
+                    append_worker_trace_step(
+                        &ctx.state_dir,
+                        &mut trace_seq,
+                        &ctx.assignment_id,
+                        &ctx.ticket_id,
+                        "thinking",
+                        "Agent 思考 / 输出消息 (agent_message)",
+                        item_text,
                     );
-                    let _ = tx.send(note);
-                    sent_progress_count += 1;
+                    pending_agent_thought = Some(item_text.to_owned());
+                } else if item_type == "reasoning" && !item_text.is_empty() {
+                    append_worker_trace_step(
+                        &ctx.state_dir,
+                        &mut trace_seq,
+                        &ctx.assignment_id,
+                        &ctx.ticket_id,
+                        "thinking",
+                        "模型推理链 (reasoning)",
+                        item_text,
+                    );
+                    if sent_progress_count < 3
+                        && let Some(tx) = &ctx.progress_tx
+                    {
+                        let note = crate::core::recall::truncate_to_im_word_limit(
+                            &format!("💭 {item_text}"),
+                            85,
+                        );
+                        let _ = tx.send(note);
+                        sent_progress_count += 1;
+                    }
+                } else if item_type == "command_execution" {
+                    let cmd_str = val
+                        .pointer("/item/command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let exit_code = val
+                        .pointer("/item/exit_code")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let agg_out = val
+                        .pointer("/item/aggregated_output")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    append_worker_trace_step(
+                        &ctx.state_dir,
+                        &mut trace_seq,
+                        &ctx.assignment_id,
+                        &ctx.ticket_id,
+                        "tool_result",
+                        format!("命令执行完成 (exit={exit_code}): {cmd_str}"),
+                        if agg_out.trim().is_empty() {
+                            "(无输出)".to_owned()
+                        } else {
+                            agg_out.chars().take(4_000).collect()
+                        },
+                    );
+                } else if item_type == "file_change" {
+                    append_worker_trace_step(
+                        &ctx.state_dir,
+                        &mut trace_seq,
+                        &ctx.assignment_id,
+                        &ctx.ticket_id,
+                        "tool_result",
+                        "文件变更 (file_change)",
+                        serde_json::to_string_pretty(&val["item"]).unwrap_or_default(),
+                    );
                 }
             } else if ev_type == "item.started" {
+                let item_type = val
+                    .pointer("/item/type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if item_type == "command_execution" {
+                    let cmd_str = val
+                        .pointer("/item/command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    append_worker_trace_step(
+                        &ctx.state_dir,
+                        &mut trace_seq,
+                        &ctx.assignment_id,
+                        &ctx.ticket_id,
+                        "tool_call",
+                        format!("开始执行命令: {cmd_str}"),
+                        cmd_str,
+                    );
+                }
                 // An `agent_message` followed by `item.started` (e.g. `command_execution`) is an intermediate
                 // thinking update before running a tool—stream it immediately to Feishu!
                 if let Some(thought) = pending_agent_thought.take()
@@ -816,6 +1009,18 @@ pub async fn run_cli_harness_worker(
                     let _ = tx.send(note);
                     sent_progress_count += 1;
                 }
+            } else if ev_type == "turn.completed"
+                && let Some(usage) = val.get("usage")
+            {
+                append_worker_trace_step(
+                    &ctx.state_dir,
+                    &mut trace_seq,
+                    &ctx.assignment_id,
+                    &ctx.ticket_id,
+                    "usage",
+                    "轮次完成 & Token 用量统计",
+                    serde_json::to_string_pretty(usage).unwrap_or_default(),
+                );
             }
         }
     }
@@ -831,6 +1036,24 @@ pub async fn run_cli_harness_worker(
     };
 
     let summary = extract_summary_from_jsonl_or_text(&stdout, &stderr);
+
+    append_worker_trace_step(
+        &ctx.state_dir,
+        &mut trace_seq,
+        &ctx.assignment_id,
+        &ctx.ticket_id,
+        if exit_status.success() { "finish" } else { "error" },
+        format!(
+            "Worker 执行结束 (status={:?}, code={:?})",
+            status,
+            exit_status.code()
+        ),
+        if !summary.is_empty() {
+            summary.clone()
+        } else {
+            stderr.clone()
+        },
+    );
 
     Ok(WorkerExecutionResult {
         status,

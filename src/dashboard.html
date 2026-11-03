@@ -382,9 +382,13 @@
 
   <div class="layout">
     <aside>
-      <button class="nav-item active" onclick="switchTab('overview', this)">
+      <button class="nav-item active" id="nav-btn-overview" onclick="switchTab('overview', this)">
         <span>总览与工单池</span>
         <span class="nav-count" id="nav-tickets-count">0</span>
+      </button>
+      <button class="nav-item" id="nav-btn-trajectory" onclick="switchTab('trajectory', this)">
+        <span>Worker 处理轨迹</span>
+        <span class="nav-count" id="nav-trace-count">0</span>
       </button>
       <button class="nav-item" onclick="switchTab('conversation', this)">
         <span>飞书对话与发件箱</span>
@@ -460,6 +464,30 @@
               <tr><td colspan="6" style="color:var(--text-muted)">加载中...</td></tr>
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <!-- TAB 1.5: WORKER EXECUTION TRAJECTORY -->
+      <section class="tab-pane" id="tab-trajectory">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">Worker 执行处理轨迹 (Step-by-Step Execution Trajectory)</h2>
+              <div style="font-size:0.8rem; color:var(--text-muted); margin-top:0.2rem">
+                实时展示每个工单 Worker 的完整执行步骤：启动 Prompt、推理思考链 (Reasoning)、命令/工具调用、输出与退出码、Token 统计与最终总结。
+              </div>
+            </div>
+            <div style="display:flex; gap:0.6rem; align-items:center; min-width:340px;">
+              <select id="trace-ticket-select" onchange="onSelectTraceTicket(this.value)"></select>
+              <button class="btn btn-primary" style="white-space:nowrap" onclick="fetchWorkerTrace()">刷新轨迹</button>
+            </div>
+          </div>
+          <div id="trace-meta-bar" style="margin-bottom:1rem; padding:0.65rem 0.9rem; background:var(--bg-card); border:1px solid var(--border); border-radius:8px; font-size:0.82rem; color:var(--text-muted)">
+            请选择工单查看轨迹...
+          </div>
+          <div class="timeline" id="trace-timeline">
+            <div style="color:var(--text-muted)">暂无轨迹数据</div>
+          </div>
         </div>
       </section>
 
@@ -725,6 +753,7 @@
     let latestOverview = null;
     let memoryDirty = false;
     let configDirty = false;
+    let selectedTraceTicketId = null;
 
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('memory-editor').addEventListener('input', () => { memoryDirty = true; });
@@ -749,7 +778,84 @@
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
       document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
       document.getElementById('tab-' + tabId).classList.add('active');
-      btn.classList.add('active');
+      if (btn) btn.classList.add('active');
+      if (tabId === 'trajectory') fetchWorkerTrace();
+    }
+
+    function inspectTrajectory(ticketId) {
+      selectedTraceTicketId = ticketId;
+      const sel = document.getElementById('trace-ticket-select');
+      if (sel) sel.value = ticketId;
+      switchTab('trajectory', document.getElementById('nav-btn-trajectory'));
+    }
+
+    function onSelectTraceTicket(ticketId) {
+      selectedTraceTicketId = ticketId;
+      fetchWorkerTrace();
+    }
+
+    async function fetchWorkerTrace() {
+      try {
+        const q = selectedTraceTicketId ? `?ticket_id=${encodeURIComponent(selectedTraceTicketId)}` : '';
+        const res = await fetch('/api/worker/trace' + q);
+        const data = await res.json();
+        const metaEl = document.getElementById('trace-meta-bar');
+        const listEl = document.getElementById('trace-timeline');
+        if (!data.ok) {
+          metaEl.textContent = '暂无可查看的工单轨迹';
+          listEl.innerHTML = '<div style="color:var(--text-muted)">暂无轨迹数据</div>';
+          return;
+        }
+        selectedTraceTicketId = data.ticket_id;
+        const sel = document.getElementById('trace-ticket-select');
+        if (sel && sel.value !== data.ticket_id) sel.value = data.ticket_id;
+
+        const asgList = (data.assignments || []).map(a => {
+          const t = a.target || {};
+          return `<code>${escapeHtml(a.id)}</code> (${escapeHtml(t.harness)}:${escapeHtml(t.provider)}/${escapeHtml(t.model)}:${escapeHtml(t.think_effort)}, status=${escapeHtml(a.status)})`;
+        }).join(' · ');
+        metaEl.innerHTML = `当前工单: <code>${escapeHtml(data.ticket_id)}</code> (<strong>${escapeHtml(data.title)}</strong>) · Worktree: <code>${escapeHtml(data.short_name)}</code> · Assignments: ${asgList || '-'}`;
+
+        const steps = data.steps || [];
+        document.getElementById('nav-trace-count').textContent = steps.length;
+        if (steps.length === 0) {
+          listEl.innerHTML = '<div style="color:var(--text-muted)">该工单暂无步骤轨迹</div>';
+          return;
+        }
+
+        const badgeForKind = (k) => {
+          switch (k) {
+            case 'launch': return '<span class="badge badge-purple">🚀 LAUNCH</span>';
+            case 'thinking': return '<span class="badge badge-blue">💭 THINKING</span>';
+            case 'tool_call': return '<span class="badge badge-amber">🛠 TOOL CALL</span>';
+            case 'tool_result': return '<span class="badge badge-gray">📄 TOOL RESULT</span>';
+            case 'usage': return '<span class="badge badge-gray">📊 TOKEN USAGE</span>';
+            case 'message': return '<span class="badge badge-green">💬 OUTBOX</span>';
+            case 'finish': return '<span class="badge badge-green">✅ FINISH</span>';
+            case 'error': return '<span class="badge badge-red">❌ ERROR</span>';
+            default: return `<span class="badge badge-gray">${escapeHtml(k)}</span>`;
+          }
+        };
+
+        listEl.innerHTML = steps.map(s => {
+          const isLong = (s.detail || '').length > 360 || s.kind === 'launch';
+          const bodyHtml = isLong
+            ? `<details style="margin-top:0.35rem"${s.kind !== 'launch' ? ' open' : ''}>
+                 <summary style="cursor:pointer;color:var(--accent);font-size:0.8rem">展开/折叠详情 (${(s.detail || '').length} chars)</summary>
+                 <pre style="margin-top:0.4rem;white-space:pre-wrap;word-break:break-word;background:#0b1120;padding:0.65rem;border-radius:6px;border:1px solid var(--border);max-height:360px;overflow-y:auto;font-size:0.78rem">${escapeHtml(s.detail)}</pre>
+               </details>`
+            : `<pre style="margin:0.35rem 0 0 0;white-space:pre-wrap;word-break:break-word;font-size:0.84rem">${escapeHtml(s.detail)}</pre>`;
+          return `<div class="chat-item ${s.kind === 'thinking' || s.kind === 'finish' ? 'bot' : 'user'}">
+            <div class="chat-meta">
+              <span><strong>#${s.seq}</strong> ${badgeForKind(s.kind)} <strong>${escapeHtml(s.title)}</strong> · <code>${escapeHtml(s.assignment_id)}</code></span>
+              <span>${escapeHtml(s.at)}</span>
+            </div>
+            ${bodyHtml}
+          </div>`;
+        }).join('');
+      } catch (e) {
+        console.error('Failed to fetch worker trace:', e);
+      }
     }
 
     function toggleAutoRefresh() {
@@ -810,6 +916,22 @@
       document.getElementById('nav-chat-count').textContent = triggers.length + outbox.length;
       document.getElementById('nav-decisions-count').textContent = decisions.length;
 
+      // Populate Trajectory ticket dropdown
+      const traceSel = document.getElementById('trace-ticket-select');
+      if (traceSel) {
+        const prev = selectedTraceTicketId || traceSel.value || (tickets[0] && tickets[0].id) || '';
+        traceSel.innerHTML = tickets.map(t =>
+          `<option value="${escapeHtml(t.id)}">${escapeHtml(t.id)} · ${escapeHtml((t.title || '').slice(0, 36))}</option>`
+        ).join('');
+        if (prev) {
+          traceSel.value = prev;
+          selectedTraceTicketId = prev;
+        }
+      }
+      if (document.getElementById('tab-trajectory').classList.contains('active')) {
+        fetchWorkerTrace();
+      }
+
       // Render Tickets table
       const tbody = document.getElementById('tickets-tbody');
       if (tickets.length === 0) {
@@ -837,6 +959,7 @@
             <td style="max-width:380px; white-space:pre-wrap">${summaryText}${prLink}</td>
             <td>
               <div style="display:flex; gap:0.4rem; flex-wrap:wrap">
+                <button class="btn btn-sm btn-primary" onclick="inspectTrajectory('${escapeHtml(t.id)}')">查看轨迹</button>
                 <button class="btn btn-sm" onclick="openSwitchModal('${escapeHtml(t.id)}', '${escapeHtml(target.harness || 'codex')}', '${escapeHtml(target.provider || 'openai')}', '${escapeHtml(target.model || 'gpt-6-astra')}', '${escapeHtml(target.think_effort || 'high')}')">切换引擎</button>
                 ${isOpen ? `<button class="btn btn-sm btn-danger" onclick="stopTicket('${escapeHtml(t.id)}')">终止</button>` : ''}
               </div>
