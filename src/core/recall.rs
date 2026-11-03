@@ -96,6 +96,24 @@ pub fn validate_im_word_limit(text: &str) -> Result<(), String> {
     }
 }
 
+/// Truncates text so that `count_words(result) <= max_words` (accounting for both CJK ideographs and ASCII words).
+pub fn truncate_to_im_word_limit(text: &str, max_words: usize) -> String {
+    if count_words(text) <= max_words {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    for ch in text.chars() {
+        let mut candidate = out.clone();
+        candidate.push(ch);
+        candidate.push('…');
+        if count_words(&candidate) > max_words {
+            break;
+        }
+        out.push(ch);
+    }
+    format!("{}…", out.trim_end())
+}
+
 /// Compact inline card for a Trigger, embedding 1-hop Chain of Recall URIs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriggerCard {

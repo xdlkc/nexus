@@ -6,7 +6,9 @@ use crate::core::model::{
     OutboxMessage, OutboxPurpose, OutboxStatus, ReportStatus, Thread, ThreadCloseOutcome, Ticket,
     TicketEnd, TicketInput, TicketInputKind, Trigger,
 };
-use crate::core::recall::{RecallCaller, RecallSnapshot, read_resource, validate_im_word_limit};
+use crate::core::recall::{
+    RecallCaller, RecallSnapshot, read_resource, truncate_to_im_word_limit, validate_im_word_limit,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -654,7 +656,13 @@ impl Engine {
         }
 
         if let Some((ch, purpose, body)) = should_send_message {
-            let _ = self.queue_outbox_message(Some(ticket_id.to_owned()), ch, purpose, &body, now);
+            let safe_body = if ch.is_low_noise_im() {
+                truncate_to_im_word_limit(&body, 95)
+            } else {
+                body
+            };
+            let _ =
+                self.queue_outbox_message(Some(ticket_id.to_owned()), ch, purpose, &safe_body, now);
         }
 
         Ok(())

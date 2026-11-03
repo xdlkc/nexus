@@ -172,8 +172,8 @@ pub fn build_worker_prompt(ticket: &Ticket, assignment: &Assignment) -> String {
          1. Use `gh-agent` for GitHub operations, `lark-bot` for Feishu operations, and `gws-agent` for Google Workspace.\n\
          2. When you need full spilled text for a truncated trigger or thread, run `nexus worker read <uri>` (or call `orchestrator_read`).\n\
          3. If a follow-up trigger in your inbox is unrelated to this Ticket, hand it back via `nexus worker handback <trigger_id> --reason \"...\"`.\n\
-         4. Report your outcome via `nexus worker report --status <ready|waiting|blocked|failed> --summary \"...\" [--pr-thread github:pr:owner/repo#N --pr-url https://...]` (or call `worker_report`).\n\
-         5. Keep any IM-facing summary or question strictly <= 100 words."
+         4. Your final response text is automatically captured and delivered to the user channel, or you may explicitly call `nexus worker report --status <ready|waiting|blocked|failed> --summary \"...\" [--pr-thread github:pr:owner/repo#N --pr-url https://...]` (or `worker_report`).\n\
+         5. Keep any IM-facing summary or reply concise (strictly <= 90 words / characters)."
             .to_owned(),
     );
 

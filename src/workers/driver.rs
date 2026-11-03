@@ -755,12 +755,7 @@ pub async fn run_cli_harness_worker(
 
 fn extract_summary_from_jsonl_or_text(stdout: &str, stderr: &str) -> String {
     let raw = extract_raw_summary_from_jsonl_or_text(stdout, stderr);
-    let words: Vec<&str> = raw.split_whitespace().collect();
-    if words.len() > 80 {
-        words[..80].join(" ")
-    } else {
-        raw
-    }
+    crate::core::recall::truncate_to_im_word_limit(&raw, 95)
 }
 
 fn extract_raw_summary_from_jsonl_or_text(stdout: &str, stderr: &str) -> String {
