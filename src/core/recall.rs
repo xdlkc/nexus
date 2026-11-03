@@ -101,12 +101,24 @@ pub fn truncate_to_im_word_limit(text: &str, max_words: usize) -> String {
     if count_words(text) <= max_words {
         return text.to_owned();
     }
+    if max_words == 0 {
+        return String::new();
+    }
     let mut out = String::new();
+    let mut completed_words = 0usize;
+    let mut in_word = false;
     for ch in text.chars() {
-        let mut candidate = out.clone();
-        candidate.push(ch);
-        candidate.push('…');
-        if count_words(&candidate) > max_words {
+        if is_cjk(ch) {
+            completed_words += usize::from(in_word) + 1;
+            in_word = false;
+        } else if ch.is_whitespace() {
+            completed_words += usize::from(in_word);
+            in_word = false;
+        } else {
+            in_word = true;
+        }
+        // The ellipsis either joins the open token or counts as its own word.
+        if completed_words >= max_words {
             break;
         }
         out.push(ch);
