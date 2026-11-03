@@ -36,3 +36,15 @@ All 5 Worker Harnesses implement a single `WorkerHarnessDriver` protocol and rec
 | `claude-code` | `ClaudeCodeDriver` | `claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --model <m> --effort <low\|medium\|high\|max>` | `Minimal/Low -> low`, `Medium -> medium`, `High -> high`, `Xhigh -> max` |
 | `codex` | `CodexDriver` | `codex exec --json --dangerously-bypass-approvals-and-sandbox -m <m> -c model_reasoning_effort="<minimal\|low\|medium\|high\|xhigh>"` | Maps directly to `model_reasoning_effort` |
 | `opencode` | `OpencodeDriver` | `opencode run --format json --model <provider>/<model>` | Passed via `--variant` / prompt header |
+
+### Console model choices
+
+The default Worker settings and live target switch dialog load provider/model suggestions
+from the installed `pi --list-models` catalog through `GET /api/worker/models`.
+Changing the engine or provider selects a matching model; loading saved settings preserves
+custom IDs. Inputs also accept custom values when Pi is missing or its catalog fails.
+`pi-rpc` lists the complete Pi catalog. `pi-native` lists only Anthropic and OpenAI,
+matching its HTTP transports; it still requires Nexus environment credentials and does
+not inherit Pi OAuth credentials or custom provider endpoints.
+
+Regression checks: `cargo test` and `node --test tests/dashboard/model_choices.cjs`.

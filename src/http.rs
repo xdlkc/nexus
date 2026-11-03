@@ -131,6 +131,7 @@ pub fn build_http_router(state: SharedAppState) -> Router {
         .route("/api/jev/test", post(handle_test_jev))
         .route("/api/config", get(handle_get_config).post(handle_update_config))
         .route("/api/memory", get(handle_get_memory).post(handle_save_memory))
+        .route("/api/worker/models", get(handle_worker_models))
         .route("/api/worker/report", post(handle_worker_report))
         .route("/api/worker/read", get(handle_worker_read))
         .route("/api/worker/trace", get(handle_get_worker_trace))
@@ -141,6 +142,17 @@ pub fn build_http_router(state: SharedAppState) -> Router {
         )
         .route("/api/settings/accept-mode", post(handle_set_accept_mode))
         .with_state(state)
+}
+
+async fn handle_worker_models()
+-> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    match crate::workers::catalog::load_pi_models().await {
+        Ok(models) => Ok(Json(serde_json::json!({ "models": models }))),
+        Err(error) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )),
+    }
 }
 
 async fn handle_dashboard() -> Html<&'static str> {

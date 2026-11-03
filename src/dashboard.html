@@ -609,11 +609,11 @@
             </div>
             <div class="form-group">
               <label>Provider</label>
-              <input type="text" id="cfg-default-provider" placeholder="openai" />
+              <input type="text" list="cfg-default-provider-list" id="cfg-default-provider" placeholder="openai" /><datalist id="cfg-default-provider-list"></datalist>
             </div>
             <div class="form-group">
               <label>Model</label>
-              <input type="text" id="cfg-default-model" placeholder="gpt-6-astra" />
+              <input type="text" list="cfg-default-model-list" id="cfg-default-model" placeholder="gpt-6-astra" /><datalist id="cfg-default-model-list"></datalist><small id="cfg-default-catalog-status" style="color:var(--text-muted)"></small>
             </div>
             <div class="form-group">
               <label>思考力度 (`ThinkEffort`)</label>
@@ -725,11 +725,11 @@
       </div>
       <div class="form-group">
         <label>Provider</label>
-        <input type="text" id="switch-provider" value="openai" />
+        <input type="text" list="switch-provider-list" id="switch-provider" value="openai" /><datalist id="switch-provider-list"></datalist>
       </div>
       <div class="form-group">
         <label>Model</label>
-        <input type="text" id="switch-model" value="gpt-6-astra" />
+        <input type="text" list="switch-model-list" id="switch-model" value="gpt-6-astra" /><datalist id="switch-model-list"></datalist><small id="switch-catalog-status" style="color:var(--text-muted)"></small>
       </div>
       <div class="form-group">
         <label>ThinkEffort</label>
@@ -766,11 +766,68 @@
         const el = document.getElementById(id);
         if (el) el.addEventListener('input', () => { configDirty = true; });
       });
+      ['cfg-default', 'switch'].forEach(prefix => {
+        document.getElementById(prefix + '-harness').addEventListener('change', () => updateModelChoices(prefix, 'harness'));
+        document.getElementById(prefix + '-provider').addEventListener('input', () => updateModelChoices(prefix, 'provider'));
+      });
       fetchOverview();
       setInterval(() => {
         if (autoRefresh) fetchOverview();
       }, 3000);
     });
+
+    let piCatalogPromise = null;
+    const catalogVersions = {};
+    async function updateModelChoices(prefix, reset = false) {
+      const version = catalogVersions[prefix] = (catalogVersions[prefix] || 0) + 1;
+      const harness = document.getElementById(prefix + '-harness').value;
+      const provider = document.getElementById(prefix + '-provider');
+      const model = document.getElementById(prefix + '-model');
+      const providerList = document.getElementById(prefix + '-provider-list');
+      const modelList = document.getElementById(prefix + '-model-list');
+      const status = document.getElementById(prefix + '-catalog-status');
+      providerList.replaceChildren();
+      modelList.replaceChildren();
+      status.textContent = '';
+      if (!['pi-native', 'pi-rpc'].includes(harness)) {
+        if (reset === 'harness') {
+          const defaults = { codex: ['openai', 'gpt-6-astra'], 'claude-code': ['anthropic', 'claude-sonnet-4-6'], opencode: ['anthropic', 'claude-sonnet-4-6'] };
+          [provider.value, model.value] = defaults[harness] || ['', ''];
+          if (prefix === 'cfg-default') configDirty = true;
+        }
+        return;
+      }
+      const previousProvider = provider.value;
+      const previousModel = model.value;
+      status.textContent = '正在读取 Pi 模型目录…';
+      try {
+        if (!piCatalogPromise) piCatalogPromise = fetch('/api/worker/models').then(async res => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '读取失败');
+          return data.models;
+        }).catch(error => { piCatalogPromise = null; throw error; });
+        let rows = await piCatalogPromise;
+        if (catalogVersions[prefix] !== version) return;
+        // Native HTTP transport currently supports these two providers only.
+        if (harness === 'pi-native') rows = rows.filter(row => ['anthropic', 'openai'].includes(row.provider));
+        const providers = [...new Set(rows.map(row => row.provider))];
+        const fill = (list, values) => list.replaceChildren(...values.map(value => {
+          const option = document.createElement('option'); option.value = value; return option;
+        }));
+        fill(providerList, providers);
+        // Only an explicit harness change replaces the provider. Typing custom IDs remains possible.
+        if (reset === 'harness' && provider.value === previousProvider && !providers.includes(provider.value)) provider.value = providers[0] || '';
+        const models = rows.filter(row => row.provider === provider.value).map(row => row.model);
+        fill(modelList, models);
+        if (reset && model.value === previousModel && !models.includes(model.value)) model.value = models[0] || '';
+        if (reset && prefix === 'cfg-default') configDirty = true;
+        status.textContent = harness === 'pi-native'
+          ? 'Pi 目录（原生仅支持 Anthropic/OpenAI HTTP；凭据需单独配置）。可输入自定义值。'
+          : '来自本机 Pi 模型目录；可输入自定义值。';
+      } catch (error) {
+        if (catalogVersions[prefix] === version) status.textContent = error.message + '；可手动输入 Provider/Model。';
+      }
+    }
 
     function showToast(msg) {
       const t = document.getElementById('toast');
@@ -1074,6 +1131,7 @@
         document.getElementById('cfg-default-provider').value = firstRuleTarget.provider || 'openai';
         document.getElementById('cfg-default-model').value = firstRuleTarget.model || 'gpt-6-astra';
         document.getElementById('cfg-default-think').value = firstRuleTarget.think_effort || 'medium';
+        updateModelChoices('cfg-default');
 
         if (cfg.jev && cfg.jev.protocol) {
           document.getElementById('cfg-jev-mode').value = cfg.jev.protocol;
@@ -1237,6 +1295,7 @@
       document.getElementById('switch-provider').value = provider;
       document.getElementById('switch-model').value = model;
       document.getElementById('switch-think').value = think;
+      updateModelChoices('switch');
       document.getElementById('switch-modal').style.display = 'flex';
     }
 
