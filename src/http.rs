@@ -1,10 +1,11 @@
-//! Local `axum` Management & Worker-Callback HTTP API (`127.0.0.1:3082`).
+//! Local `axum` Management Console & Worker-Callback HTTP API (`127.0.0.1:3082`).
 
-use crate::config::NexusConfig;
+use crate::config::{NexusConfig, probe_environment};
 use crate::core::engine::Engine;
-use crate::core::gate::evaluate_gate_strength;
+use crate::core::gate::{evaluate_gate_strength, parse_inline_target_directive};
 use crate::core::model::{
-    AcceptMode, ExecutionTarget, HarnessKind, ReportStatus, ThinkEffort, Trigger,
+    AcceptMode, ChannelAddress, ExecutionTarget, HarnessKind, ReportStatus, SourceKindId,
+    ThinkEffort, Trigger,
 };
 use crate::core::recall::RecallCaller;
 use crate::infra::store::SqliteStore;
@@ -16,7 +17,10 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+
+const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
 /// Shared daemon state accessible by the `axum` HTTP server and the background runtime loop.
 #[derive(Clone)]
@@ -65,13 +69,45 @@ pub struct AcceptModePayload {
     pub accept_mode: AcceptMode,
 }
 
-/// Builds the `axum::Router` for the management and worker-callback HTTP server.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StopTicketPayload {
+    pub ticket_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MemoryPayload {
+    pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SimulateChatPayload {
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateConfigPayload {
+    pub bot_name: Option<String>,
+    pub reply_in_thread: Option<bool>,
+    pub wake_keywords: Option<Vec<String>>,
+    pub chat_ids: Option<Vec<String>>,
+    pub github_repos: Option<Vec<String>>,
+    pub allowed_actors: Option<Vec<String>>,
+    pub default_target: Option<ExecutionTarget>,
+}
+
+/// Builds the `axum::Router` for the management console and worker-callback HTTP server.
 pub fn build_http_router(state: SharedAppState) -> Router {
     Router::new()
         .route("/", get(handle_dashboard))
+        .route("/api/overview", get(handle_get_overview))
         .route("/api/state", get(handle_get_state))
         .route("/api/tickets", get(handle_get_tickets))
+        .route("/api/tickets/stop", post(handle_stop_ticket))
         .route("/api/triggers", post(handle_post_trigger))
+        .route("/api/chat/simulate", post(handle_simulate_chat))
+        .route("/api/config", get(handle_get_config).post(handle_update_config))
+        .route("/api/memory", get(handle_get_memory).post(handle_save_memory))
         .route("/api/worker/report", post(handle_worker_report))
         .route("/api/worker/read", get(handle_worker_read))
         .route("/api/worker/handback", post(handle_worker_handback))
@@ -83,46 +119,31 @@ pub fn build_http_router(state: SharedAppState) -> Router {
         .with_state(state)
 }
 
-async fn handle_dashboard(State(app): State<SharedAppState>) -> Html<String> {
-    let eng = app.engine.lock().unwrap();
-    let open_count = eng.state.tickets.values().filter(|t| t.is_open()).count();
-    let total_tickets = eng.state.tickets.len();
-    let total_triggers = eng.state.triggers.len();
-    let pending_outbox = eng
-        .state
-        .outbox
-        .values()
-        .filter(|m| m.status == crate::core::model::OutboxStatus::Pending)
-        .count();
+async fn handle_dashboard() -> Html<&'static str> {
+    Html(DASHBOARD_HTML)
+}
 
-    let mut rows = String::new();
-    for t in eng.state.tickets.values() {
-        let target = t.current_target();
-        rows.push_str(&format!(
-            "<tr><td><code>{}</code></td><td>{}</td><td><code>{:?}</code></td><td><code>{}:{}/{}:{}</code></td><td><code>{}</code></td></tr>",
-            t.id,
-            t.title,
-            t.stage(),
-            target.harness.as_str(),
-            target.provider,
-            target.model,
-            target.think_effort.as_str(),
-            t.origin_thread_key
-        ));
-    }
+async fn handle_get_overview(State(app): State<SharedAppState>) -> Json<serde_json::Value> {
+    let state_val = {
+        let eng = app.engine.lock().unwrap();
+        serde_json::to_value(&eng.state).unwrap_or_default()
+    };
+    let (cfg_val, mem_path) = {
+        let cfg = app.config.lock().unwrap();
+        (
+            serde_json::to_value(&*cfg).unwrap_or_default(),
+            cfg.state_dir.join("MEMORY.md"),
+        )
+    };
+    let memory = std::fs::read_to_string(mem_path).unwrap_or_default();
+    let toolchain = probe_environment();
 
-    let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexus Control Plane</title>\
-         <style>body{{font-family:system-ui,sans-serif;margin:2rem;background:#0f172a;color:#f8fafc}}\
-         table{{width:100%;border-collapse:collapse;margin-top:1rem}}\
-         th,td{{border:1px solid #334155;padding:0.6rem;text-align:left}}\
-         code{{background:#1e293b;padding:0.15rem 0.35rem;border-radius:4px}}</style></head>\
-         <body><h1>Nexus Super-Agent Control Plane</h1>\
-         <p>Open Tickets: <strong>{open_count}</strong> / {total_tickets} | Triggers: <strong>{total_triggers}</strong> | Pending Outbox: <strong>{pending_outbox}</strong></p>\
-         <table><thead><tr><th>ID</th><th>Title</th><th>Stage</th><th>Execution Target</th><th>Origin Thread</th></tr></thead>\
-         <tbody>{rows}</tbody></table></body></html>"
-    );
-    Html(html)
+    Json(serde_json::json!({
+        "state": state_val,
+        "config": cfg_val,
+        "memory": memory,
+        "toolchain": toolchain,
+    }))
 }
 
 async fn handle_get_state(State(app): State<SharedAppState>) -> Json<serde_json::Value> {
@@ -134,6 +155,161 @@ async fn handle_get_tickets(State(app): State<SharedAppState>) -> Json<serde_jso
     let eng = app.engine.lock().unwrap();
     let list: Vec<_> = eng.state.tickets.values().cloned().collect();
     Json(serde_json::json!({ "tickets": list }))
+}
+
+async fn handle_stop_ticket(
+    State(app): State<SharedAppState>,
+    Json(payload): Json<StopTicketPayload>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut eng = app.engine.lock().unwrap();
+    match eng.stop_ticket(&payload.ticket_id, &payload.reason, &now) {
+        Ok(()) => {
+            let _ = app.store.save_engine_state(&eng.state, &now);
+            (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": e })),
+        ),
+    }
+}
+
+async fn handle_get_config(State(app): State<SharedAppState>) -> Json<serde_json::Value> {
+    let cfg = app.config.lock().unwrap();
+    Json(serde_json::to_value(&*cfg).unwrap_or_default())
+}
+
+async fn handle_update_config(
+    State(app): State<SharedAppState>,
+    Json(payload): Json<UpdateConfigPayload>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let mut cfg = app.config.lock().unwrap();
+    if let Some(name) = payload.bot_name
+        && !name.is_empty()
+    {
+        cfg.feishu.bot_name = name;
+    }
+    if let Some(reply_in_thread) = payload.reply_in_thread {
+        cfg.feishu.reply_in_thread = reply_in_thread;
+    }
+    if let Some(wake) = payload.wake_keywords {
+        cfg.feishu.wake_keywords = wake;
+    }
+    if let Some(chats) = payload.chat_ids {
+        cfg.feishu.chat_ids = chats;
+    }
+    if let Some(repos) = payload.github_repos {
+        cfg.github.repos = repos;
+    }
+    if let Some(actors) = payload.allowed_actors {
+        cfg.allowed_actors = actors.into_iter().collect();
+    }
+    if let Some(target) = payload.default_target {
+        for rule in &mut cfg.proactive_rules {
+            rule.default_target = Some(target.clone());
+        }
+    }
+    let _ = cfg.save();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "ok": true, "config": &*cfg })),
+    )
+}
+
+async fn handle_get_memory(State(app): State<SharedAppState>) -> Json<serde_json::Value> {
+    let path = app.config.lock().unwrap().state_dir.join("MEMORY.md");
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    Json(serde_json::json!({
+        "path": path,
+        "content": content,
+    }))
+}
+
+async fn handle_save_memory(
+    State(app): State<SharedAppState>,
+    Json(payload): Json<MemoryPayload>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let path = app.config.lock().unwrap().state_dir.join("MEMORY.md");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(&path, &payload.content) {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        ),
+    }
+}
+
+async fn handle_simulate_chat(
+    State(app): State<SharedAppState>,
+    Json(payload): Json<SimulateChatPayload>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let ts_ms = chrono::Utc::now().timestamp_millis();
+    let msg_id = format!("admin_{ts_ms}");
+    let (cleaned_text, inline_target) = parse_inline_target_directive(&payload.text);
+
+    let (source_id, chat_id, actor_id, policy) = {
+        let cfg = app.config.lock().unwrap();
+        let cid = cfg
+            .feishu
+            .chat_ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "admin_console".to_owned());
+        let aid = cfg
+            .allowed_actors
+            .iter()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "admin".to_owned());
+        (cfg.feishu.source_id.clone(), cid, aid, cfg.admission_policy())
+    };
+
+    let reply_channel = if chat_id != "admin_console" {
+        Some(ChannelAddress::FeishuTopic {
+            source_id: source_id.clone(),
+            chat_id: chat_id.clone(),
+            root_message_id: msg_id.clone(),
+            reply_to_message_id: msg_id.clone(),
+        })
+    } else {
+        None
+    };
+
+    let trigger = Trigger {
+        id: format!("admin-trig-{ts_ms}"),
+        source_id,
+        source_kind: SourceKindId::Feishu,
+        external_id: msg_id.clone(),
+        thread_key: format!("admin:chat:{chat_id}:{msg_id}"),
+        actor_id: actor_id.clone(),
+        actor_is_bot: false,
+        addressed_agent: true,
+        text: cleaned_text,
+        reply_to_trigger_id: None,
+        inline_target,
+        reply_channel,
+        at: now.clone(),
+        meta: BTreeMap::new(),
+    };
+
+    let mut eng = app.engine.lock().unwrap();
+    let accept_mode = eng.state.accept_mode.unwrap_or(AcceptMode::Auto);
+    let strength = evaluate_gate_strength(&actor_id, false, true, &policy, accept_mode);
+    let disp = eng.receive_trigger(trigger, strength);
+    let _ = app.store.save_engine_state(&eng.state, &now);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "disposition": format!("{disp:?}"),
+        })),
+    )
 }
 
 async fn handle_post_trigger(
@@ -274,6 +450,7 @@ async fn handle_set_accept_mode(
     {
         let mut cfg = app.config.lock().unwrap();
         cfg.accept_mode = payload.accept_mode;
+        let _ = cfg.save();
     }
     let mut eng = app.engine.lock().unwrap();
     eng.state.accept_mode = Some(payload.accept_mode);

@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nexus Super-Agent Control Plane · 管理后台</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --bg-panel: #111827;
+      --bg-card: #1e293b;
+      --bg-hover: #273549;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-hover: #0ea5e9;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --purple: #a855f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.9rem 1.75rem;
+      background: rgba(17, 24, 39, 0.92);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(8px);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #38bdf8, #6366f1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.1rem;
+      color: #fff;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+    .brand span {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      display: block;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .mode-group {
+      display: inline-flex;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .mode-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 0.35rem 0.75rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .mode-btn.active {
+      background: var(--accent);
+      color: #0f172a;
+    }
+    .btn {
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 0.42rem 0.85rem;
+      font-size: 0.84rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn:hover { background: var(--bg-hover); }
+    .btn-primary {
+      background: var(--accent);
+      color: #0b1120;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+    .btn-danger:hover { background: rgba(239, 68, 68, 0.28); }
+    .btn-sm {
+      padding: 0.25rem 0.55rem;
+      font-size: 0.76rem;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 230px 1fr;
+      min-height: calc(100vh - 63px);
+    }
+    aside {
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      padding: 1.1rem 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.6rem 0.85rem;
+      border-radius: 8px;
+      color: var(--text-muted);
+      font-size: 0.88rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      text-align: left;
+      width: 100%;
+    }
+    .nav-item:hover {
+      background: var(--bg-card);
+      color: var(--text);
+    }
+    .nav-item.active {
+      background: rgba(56, 189, 248, 0.14);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .nav-count {
+      background: var(--bg-card);
+      color: var(--text-muted);
+      padding: 0.08rem 0.45rem;
+      border-radius: 999px;
+      font-size: 0.73rem;
+    }
+    main {
+      padding: 1.5rem 2rem;
+      max-width: 1400px;
+      width: 100%;
+    }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .kpi-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.15rem;
+    }
+    .kpi-label {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .kpi-value {
+      font-size: 1.65rem;
+      font-weight: 700;
+      margin-top: 0.25rem;
+    }
+    .kpi-sub {
+      font-size: 0.76rem;
+      color: var(--text-muted);
+      margin-top: 0.2rem;
+    }
+
+    .card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.2rem 1.35rem;
+      margin-bottom: 1.25rem;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1rem;
+    }
+    .card-title {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86rem;
+    }
+    th, td {
+      padding: 0.65rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+    }
+    tr:hover td { background: rgba(30, 41, 59, 0.45); }
+
+    code, .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.8rem;
+      background: var(--bg-card);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.73rem;
+      font-weight: 600;
+    }
+    .badge-green { background: rgba(34, 197, 94, 0.16); color: #4ade80; }
+    .badge-blue { background: rgba(56, 189, 248, 0.16); color: #38bdf8; }
+    .badge-amber { background: rgba(245, 158, 11, 0.16); color: #fbbf24; }
+    .badge-red { background: rgba(239, 68, 68, 0.16); color: #f87171; }
+    .badge-purple { background: rgba(168, 85, 247, 0.16); color: #c084fc; }
+    .badge-gray { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      margin-bottom: 0.85rem;
+    }
+    .form-group label {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    input[type="text"], select, textarea {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 7px;
+      padding: 0.5rem 0.7rem;
+      font-size: 0.86rem;
+      width: 100%;
+      font-family: inherit;
+    }
+    textarea {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      resize: vertical;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .chat-item {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 0.8rem 1rem;
+    }
+    .chat-item.bot {
+      border-left: 3px solid var(--accent);
+      background: rgba(56, 189, 248, 0.06);
+    }
+    .chat-item.user {
+      border-left: 3px solid var(--success);
+    }
+    .chat-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.76rem;
+      color: var(--text-muted);
+      margin-bottom: 0.35rem;
+    }
+    .chat-body {
+      font-size: 0.9rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      background: #0ea5e9;
+      color: #0b1120;
+      font-weight: 600;
+      padding: 0.65rem 1.1rem;
+      border-radius: 8px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+      display: none;
+      z-index: 200;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.4rem;
+      width: 100%;
+      max-width: 480px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="brand-logo">N</div>
+      <div>
+        <h1>Nexus Super-Agent Control Plane</h1>
+        <span id="header-sub">双引擎路由 (Jev + LLM) · 多态 Worker 池 · 飞书 & GitHub 闭环</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="mode-group" title="切换全局准入模式 (AcceptMode)">
+        <button class="mode-btn" id="mode-off" onclick="setAcceptMode('off')">OFF</button>
+        <button class="mode-btn" id="mode-observe" onclick="setAcceptMode('observe')">OBSERVE</button>
+        <button class="mode-btn" id="mode-auto" onclick="setAcceptMode('auto')">AUTO</button>
+      </div>
+      <button class="btn" id="auto-refresh-btn" onclick="toggleAutoRefresh()">自动刷新: 开启</button>
+      <button class="btn btn-primary" onclick="fetchOverview()">立即刷新</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside>
+      <button class="nav-item active" onclick="switchTab('overview', this)">
+        <span>总览与工单池</span>
+        <span class="nav-count" id="nav-tickets-count">0</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('conversation', this)">
+        <span>飞书对话与发件箱</span>
+        <span class="nav-count" id="nav-chat-count">0</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('decisions', this)">
+        <span>双引擎路由决策</span>
+        <span class="nav-count" id="nav-decisions-count">0</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('memory', this)">
+        <span>长期记忆 (MEMORY)</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('settings', this)">
+        <span>唤醒规则与系统配置</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('toolchain', this)">
+        <span>工具链与环境探针</span>
+      </button>
+    </aside>
+
+    <main>
+      <!-- TAB 1: OVERVIEW & TICKETS -->
+      <section class="tab-pane active" id="tab-overview">
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-label">活跃工单 / 总工单</div>
+            <div class="kpi-value" id="kpi-tickets">0 / 0</div>
+            <div class="kpi-sub" id="kpi-effects">待执行副作用: 0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">飞书机器人身份</div>
+            <div class="kpi-value" id="kpi-bot-name" style="font-size:1.3rem">-</div>
+            <div class="kpi-sub" id="kpi-reply-mode">-</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">接入事件 (Triggers)</div>
+            <div class="kpi-value" id="kpi-triggers">0</div>
+            <div class="kpi-sub" id="kpi-threads">活跃会话串: 0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Outbox 消息投递</div>
+            <div class="kpi-value" id="kpi-outbox">0</div>
+            <div class="kpi-sub" id="kpi-outbox-sub">已发送: 0 · 待发送: 0</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">快速派发任务 / 模拟飞书群消息</h2>
+          </div>
+          <div style="display:flex; gap:0.75rem; align-items:center;">
+            <input type="text" id="quick-msg-input" placeholder="例如：奈克斯，帮我检查一下 clipboard-history 仓库的最近提交（可带 [codex:gpt-6-astra:high] 指令）" />
+            <button class="btn btn-primary" style="white-space:nowrap" onclick="dispatchSimulatedMessage()">立即派发</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">工单列表 (Tickets & Polymorphic Worker Assignments)</h2>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>工单 ID</th>
+                <th>标题 / 关联仓库</th>
+                <th>当前阶段</th>
+                <th>执行引擎 (Harness × Model × Think)</th>
+                <th>最新 Worker 总结</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="tickets-tbody">
+              <tr><td colspan="6" style="color:var(--text-muted)">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- TAB 2: CONVERSATION & OUTBOX -->
+      <section class="tab-pane" id="tab-conversation">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">群聊上下文与机器人回复时间线 (Chronological Chat & Outbox Stream)</h2>
+          </div>
+          <div class="timeline" id="chat-timeline">
+            <div style="color:var(--text-muted)">暂无消息记录</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: DECISIONS -->
+      <section class="tab-pane" id="tab-decisions">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">双引擎路由审计日志 (Tier-1 Jev & Tier-2 LLM Decisions)</h2>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>决策 ID</th>
+                <th>时间</th>
+                <th>动作 (Outcome)</th>
+                <th>关联工单</th>
+                <th>推荐目标 (Target)</th>
+                <th>原因 / 命中规则</th>
+              </tr>
+            </thead>
+            <tbody id="decisions-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- TAB 4: MEMORY -->
+      <section class="tab-pane" id="tab-memory">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">持久化长期记忆库 (`.nexus/MEMORY.md`)</h2>
+              <div style="font-size:0.8rem; color:var(--text-muted); margin-top:0.2rem">
+                每次启动 Worker 时会自动挂载此 Markdown 内容与当前群聊近期历史对话，实现跨会话记忆。
+              </div>
+            </div>
+            <button class="btn btn-primary" onclick="saveMemory()">保存 MEMORY.md</button>
+          </div>
+          <textarea id="memory-editor" rows="16" placeholder="# Nexus Persistent Memory..."></textarea>
+        </div>
+      </section>
+
+      <!-- TAB 5: SETTINGS -->
+      <section class="tab-pane" id="tab-settings">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">飞书群聊行为、免 `@` 唤醒词与 GitHub 绑定配置</h2>
+            <button class="btn btn-primary" onclick="saveConfig()">保存并热更新配置</button>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>机器人名称 (`feishu.bot_name`)</label>
+              <input type="text" id="cfg-bot-name" />
+            </div>
+            <div class="form-group">
+              <label>群聊回复方式 (`feishu.reply_in_thread`)</label>
+              <select id="cfg-reply-in-thread">
+                <option value="false">默认以普通群消息直接回复 (reply_in_thread = false)</option>
+                <option value="true">折叠进话题回复 (reply_in_thread = true)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>免 `@` 唤醒触发词 (`feishu.wake_keywords`，逗号分隔)</label>
+              <input type="text" id="cfg-wake-keywords" placeholder="奈克斯, nexus" />
+            </div>
+            <div class="form-group">
+              <label>监听飞书群 Chat IDs (逗号分隔，留空自动发现)</label>
+              <input type="text" id="cfg-chat-ids" />
+            </div>
+            <div class="form-group">
+              <label>绑定 GitHub 仓库 (`github.repos`，逗号分隔)</label>
+              <input type="text" id="cfg-github-repos" />
+            </div>
+            <div class="form-group">
+              <label>允许的飞书用户 Open ID 白名单 (`allowed_actors`，逗号分隔)</label>
+              <input type="text" id="cfg-allowed-actors" />
+            </div>
+          </div>
+
+          <hr style="border:none; border-top:1px solid var(--border); margin:1.25rem 0" />
+          <h3 style="font-size:0.95rem; margin-top:0">默认 Worker 执行引擎 (Default ExecutionTarget)</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Harness 驱动器</label>
+              <select id="cfg-default-harness">
+                <option value="codex">codex (OpenAI Codex CLI)</option>
+                <option value="claude-code">claude-code (Claude Code CLI)</option>
+                <option value="pi-native">pi-native (内置原生 ReAct)</option>
+                <option value="pi-rpc">pi-rpc (Pi Agent RPC)</option>
+                <option value="opencode">opencode (OpenCode CLI)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Provider</label>
+              <input type="text" id="cfg-default-provider" placeholder="openai" />
+            </div>
+            <div class="form-group">
+              <label>Model</label>
+              <input type="text" id="cfg-default-model" placeholder="gpt-6-astra" />
+            </div>
+            <div class="form-group">
+              <label>思考力度 (`ThinkEffort`)</label>
+              <select id="cfg-default-think">
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: TOOLCHAIN -->
+      <section class="tab-pane" id="tab-toolchain">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">宿主机 CLI 工具链与凭据隔离垫片探针</h2>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>CLI 工具</th>
+                <th>安装状态</th>
+                <th>版本 / 详情</th>
+              </tr>
+            </thead>
+            <tbody id="toolchain-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Modal for Mid-Flight Switch Target -->
+  <div class="modal-backdrop" id="switch-modal">
+    <div class="modal">
+      <h3 style="margin-top:0">热切换工单执行引擎 (`SwitchExecutionTarget`)</h3>
+      <input type="hidden" id="switch-ticket-id" />
+      <div class="form-group">
+        <label>目标 Harness</label>
+        <select id="switch-harness">
+          <option value="codex">codex</option>
+          <option value="claude-code">claude-code</option>
+          <option value="pi-native">pi-native</option>
+          <option value="pi-rpc">pi-rpc</option>
+          <option value="opencode">opencode</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Provider</label>
+        <input type="text" id="switch-provider" value="openai" />
+      </div>
+      <div class="form-group">
+        <label>Model</label>
+        <input type="text" id="switch-model" value="gpt-6-astra" />
+      </div>
+      <div class="form-group">
+        <label>ThinkEffort</label>
+        <select id="switch-think">
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high" selected>high</option>
+          <option value="xhigh">xhigh</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>切换原因 (写入 Handoff 卡片)</label>
+        <input type="text" id="switch-reason" value="管理后台手动热切换执行引擎" />
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:0.6rem; margin-top:1rem">
+        <button class="btn" onclick="closeSwitchModal()">取消</button>
+        <button class="btn btn-primary" onclick="submitSwitchTarget()">确认热切换</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let autoRefresh = true;
+    let latestOverview = null;
+    let memoryDirty = false;
+    let configDirty = false;
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('memory-editor').addEventListener('input', () => { memoryDirty = true; });
+      ['cfg-bot-name','cfg-reply-in-thread','cfg-wake-keywords','cfg-chat-ids','cfg-github-repos','cfg-allowed-actors','cfg-default-harness','cfg-default-provider','cfg-default-model','cfg-default-think'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', () => { configDirty = true; });
+      });
+      fetchOverview();
+      setInterval(() => {
+        if (autoRefresh) fetchOverview();
+      }, 3000);
+    });
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 2600);
+    }
+
+    function switchTab(tabId, btn) {
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+      document.getElementById('tab-' + tabId).classList.add('active');
+      btn.classList.add('active');
+    }
+
+    function toggleAutoRefresh() {
+      autoRefresh = !autoRefresh;
+      document.getElementById('auto-refresh-btn').textContent = '自动刷新: ' + (autoRefresh ? '开启' : '暂停');
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    async function fetchOverview() {
+      try {
+        const res = await fetch('/api/overview');
+        const data = await res.json();
+        latestOverview = data;
+        renderOverview(data);
+      } catch (e) {
+        console.error('Failed to fetch overview:', e);
+      }
+    }
+
+    function renderOverview(data) {
+      const state = data.state || {};
+      const cfg = data.config || {};
+      const tickets = Object.values(state.tickets || {}).reverse();
+      const triggers = Object.values(state.triggers || {});
+      const decisions = Object.values(state.decisions || {}).reverse();
+      const outbox = Object.values(state.outbox || {});
+      const threads = Object.values(state.threads || {});
+      const effects = state.effects || [];
+
+      const mode = (state.accept_mode || cfg.accept_mode || 'auto').toLowerCase();
+      ['off', 'observe', 'auto'].forEach(m => {
+        const el = document.getElementById('mode-' + m);
+        if (el) el.classList.toggle('active', m === mode);
+      });
+
+      const openTickets = tickets.filter(t => !t.ended).length;
+      const sentOutbox = outbox.filter(o => o.status === 'sent').length;
+      const pendingOutbox = outbox.filter(o => o.status === 'pending').length;
+
+      document.getElementById('kpi-tickets').textContent = `${openTickets} / ${tickets.length}`;
+      document.getElementById('kpi-effects').textContent = `待执行副作用队列: ${effects.length}`;
+      document.getElementById('kpi-bot-name').textContent = (cfg.feishu && cfg.feishu.bot_name) || '奈克斯';
+      document.getElementById('kpi-reply-mode').textContent =
+        (cfg.feishu && cfg.feishu.reply_in_thread) ? '回复模式: 话题折叠回复' : '回复模式: 群聊普通消息直接回复';
+      document.getElementById('kpi-triggers').textContent = triggers.length;
+      document.getElementById('kpi-threads').textContent = `活跃会话串: ${threads.length}`;
+      document.getElementById('kpi-outbox').textContent = outbox.length;
+      document.getElementById('kpi-outbox-sub').textContent = `已发送: ${sentOutbox} · 待发送: ${pendingOutbox}`;
+
+      document.getElementById('nav-tickets-count').textContent = tickets.length;
+      document.getElementById('nav-chat-count').textContent = triggers.length + outbox.length;
+      document.getElementById('nav-decisions-count').textContent = decisions.length;
+
+      // Render Tickets table
+      const tbody = document.getElementById('tickets-tbody');
+      if (tickets.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted)">暂无工单</td></tr>';
+      } else {
+        tbody.innerHTML = tickets.map(t => {
+          const latestAsg = (t.assignments && t.assignments[t.assignments.length - 1]) || {};
+          const target = latestAsg.target || {};
+          const report = latestAsg.latest_report || {};
+          const isOpen = !t.ended;
+          const stageBadge = isOpen
+            ? `<span class="badge badge-green">OPEN (${escapeHtml(latestAsg.status || 'pending')})</span>`
+            : `<span class="badge badge-gray">ENDED (${escapeHtml(t.ended.outcome)})</span>`;
+          const summaryText = report.summary
+            ? escapeHtml(report.summary)
+            : (t.delivery_error ? `<span style="color:var(--danger)">${escapeHtml(t.delivery_error)}</span>` : '<span style="color:var(--text-muted)">等待执行结果...</span>');
+          const prLink = report.pull_request_url
+            ? `<div style="margin-top:0.25rem"><a href="${escapeHtml(report.pull_request_url)}" target="_blank" style="color:var(--accent)">查看 PR ↗</a></div>`
+            : '';
+          return `<tr>
+            <td><code>${escapeHtml(t.id)}</code><div style="font-size:0.74rem;color:var(--text-muted);margin-top:0.2rem">${escapeHtml(t.short_name)}</div></td>
+            <td><strong>${escapeHtml(t.title)}</strong><div style="font-size:0.76rem;color:var(--text-muted)">${escapeHtml(t.repo || 'default')}</div></td>
+            <td>${stageBadge}</td>
+            <td><code>${escapeHtml(target.harness || '-')}:${escapeHtml(target.provider || '-')}/${escapeHtml(target.model || '-')}:${escapeHtml(target.think_effort || '-')}</code></td>
+            <td style="max-width:380px; white-space:pre-wrap">${summaryText}${prLink}</td>
+            <td>
+              <div style="display:flex; gap:0.4rem; flex-wrap:wrap">
+                <button class="btn btn-sm" onclick="openSwitchModal('${escapeHtml(t.id)}', '${escapeHtml(target.harness || 'codex')}', '${escapeHtml(target.provider || 'openai')}', '${escapeHtml(target.model || 'gpt-6-astra')}', '${escapeHtml(target.think_effort || 'high')}')">切换引擎</button>
+                ${isOpen ? `<button class="btn btn-sm btn-danger" onclick="stopTicket('${escapeHtml(t.id)}')">终止</button>` : ''}
+              </div>
+            </td>
+          </tr>`;
+        }).join('');
+      }
+
+      // Render Conversation & Outbox timeline
+      const timelineItems = [];
+      triggers.forEach(tr => {
+        timelineItems.push({
+          kind: 'user',
+          at: tr.at || '',
+          actor: tr.actor_id || 'user',
+          addressed: tr.addressed_agent,
+          id: tr.id,
+          text: tr.text || ''
+        });
+      });
+      outbox.forEach(ob => {
+        timelineItems.push({
+          kind: 'bot',
+          at: ob.created_at || '',
+          status: ob.status,
+          purpose: ob.purpose,
+          id: ob.id,
+          text: ob.body || '',
+          error: ob.last_error
+        });
+      });
+      timelineItems.sort((a, b) => b.at.localeCompare(a.at));
+      const chatEl = document.getElementById('chat-timeline');
+      if (timelineItems.length === 0) {
+        chatEl.innerHTML = '<div style="color:var(--text-muted)">暂无对话记录</div>';
+      } else {
+        chatEl.innerHTML = timelineItems.map(item => {
+          if (item.kind === 'user') {
+            const addrBadge = item.addressed
+              ? '<span class="badge badge-blue">已唤醒介入 (Explicit)</span>'
+              : '<span class="badge badge-gray">群内静默记录 (Inferred)</span>';
+            return `<div class="chat-item user">
+              <div class="chat-meta">
+                <span>👤 用户 <code>${escapeHtml(item.actor)}</code> · <code>${escapeHtml(item.id)}</code> ${addrBadge}</span>
+                <span>${escapeHtml(item.at)}</span>
+              </div>
+              <div class="chat-body">${escapeHtml(item.text)}</div>
+            </div>`;
+          } else {
+            const stBadge = item.status === 'sent'
+              ? '<span class="badge badge-green">已送达飞书 (Sent)</span>'
+              : (item.status === 'pending' ? '<span class="badge badge-amber">待发送</span>' : '<span class="badge badge-red">发送失败</span>');
+            const errHtml = item.error ? `<div style="color:var(--danger);font-size:0.78rem;margin-top:0.35rem">${escapeHtml(item.error)}</div>` : '';
+            return `<div class="chat-item bot">
+              <div class="chat-meta">
+                <span>🤖 奈克斯回复 · <code>${escapeHtml(item.id)}</code> (${escapeHtml(item.purpose)}) ${stBadge}</span>
+                <span>${escapeHtml(item.at)}</span>
+              </div>
+              <div class="chat-body">${escapeHtml(item.text)}</div>
+              ${errHtml}
+            </div>`;
+          }
+        }).join('');
+      }
+
+      // Render Decisions table
+      const decBody = document.getElementById('decisions-tbody');
+      if (decisions.length === 0) {
+        decBody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted)">暂无路由决策记录</td></tr>';
+      } else {
+        decBody.innerHTML = decisions.map(d => {
+          const t = d.target || {};
+          const outcomeBadge = d.outcome === 'accept'
+            ? '<span class="badge badge-green">ACCEPT</span>'
+            : (d.outcome === 'ignore' ? '<span class="badge badge-gray">IGNORE</span>' : `<span class="badge badge-blue">${escapeHtml(d.outcome)}</span>`);
+          return `<tr>
+            <td><code>${escapeHtml(d.id)}</code></td>
+            <td style="font-size:0.78rem;color:var(--text-muted)">${escapeHtml(d.at)}</td>
+            <td>${outcomeBadge}</td>
+            <td>${d.ticket_id ? `<code>${escapeHtml(d.ticket_id)}</code>` : '-'}</td>
+            <td>${t.harness ? `<code>${escapeHtml(t.harness)}:${escapeHtml(t.model)}:${escapeHtml(t.think_effort)}</code>` : '-'}</td>
+            <td>${escapeHtml(d.reason)}</td>
+          </tr>`;
+        }).join('');
+      }
+
+      // Populate Memory if not edited
+      if (!memoryDirty && typeof data.memory === 'string') {
+        document.getElementById('memory-editor').value = data.memory;
+      }
+
+      // Populate Config if not edited
+      if (!configDirty && cfg.feishu) {
+        document.getElementById('cfg-bot-name').value = cfg.feishu.bot_name || '';
+        document.getElementById('cfg-reply-in-thread').value = cfg.feishu.reply_in_thread ? 'true' : 'false';
+        document.getElementById('cfg-wake-keywords').value = (cfg.feishu.wake_keywords || []).join(', ');
+        document.getElementById('cfg-chat-ids').value = (cfg.feishu.chat_ids || []).join(', ');
+        document.getElementById('cfg-github-repos').value = (cfg.github && cfg.github.repos || []).join(', ');
+        document.getElementById('cfg-allowed-actors').value = (cfg.allowed_actors || []).join(', ');
+        const firstRuleTarget = (cfg.proactive_rules && cfg.proactive_rules[0] && cfg.proactive_rules[0].default_target) || {};
+        document.getElementById('cfg-default-harness').value = firstRuleTarget.harness || 'codex';
+        document.getElementById('cfg-default-provider').value = firstRuleTarget.provider || 'openai';
+        document.getElementById('cfg-default-model').value = firstRuleTarget.model || 'gpt-6-astra';
+        document.getElementById('cfg-default-think').value = firstRuleTarget.think_effort || 'medium';
+      }
+
+      // Render Toolchain
+      const toolsBody = document.getElementById('toolchain-tbody');
+      const tools = data.toolchain || [];
+      toolsBody.innerHTML = tools.map(tl => `<tr>
+        <td><code>${escapeHtml(tl.binary)}</code></td>
+        <td>${tl.installed ? '<span class="badge badge-green">已安装</span>' : '<span class="badge badge-amber">未检测到</span>'}</td>
+        <td><code>${escapeHtml(tl.version_or_note)}</code></td>
+      </tr>`).join('');
+    }
+
+    async function setAcceptMode(mode) {
+      await fetch('/api/settings/accept-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accept_mode: mode })
+      });
+      showToast('已切换准入模式为: ' + mode.toUpperCase());
+      fetchOverview();
+    }
+
+    async function saveMemory() {
+      const content = document.getElementById('memory-editor').value;
+      const res = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content })
+      });
+      if (res.ok) {
+        memoryDirty = false;
+        showToast('长期记忆 MEMORY.md 已保存！');
+      }
+    }
+
+    async function saveConfig() {
+      const splitCsv = (s) => s.split(',').map(x => x.trim()).filter(Boolean);
+      const payload = {
+        bot_name: document.getElementById('cfg-bot-name').value.trim(),
+        reply_in_thread: document.getElementById('cfg-reply-in-thread').value === 'true',
+        wake_keywords: splitCsv(document.getElementById('cfg-wake-keywords').value),
+        chat_ids: splitCsv(document.getElementById('cfg-chat-ids').value),
+        github_repos: splitCsv(document.getElementById('cfg-github-repos').value),
+        allowed_actors: splitCsv(document.getElementById('cfg-allowed-actors').value),
+        default_target: {
+          harness: document.getElementById('cfg-default-harness').value,
+          provider: document.getElementById('cfg-default-provider').value.trim() || 'openai',
+          model: document.getElementById('cfg-default-model').value.trim() || 'gpt-6-astra',
+          think_effort: document.getElementById('cfg-default-think').value
+        }
+      };
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        configDirty = false;
+        showToast('配置已保存并热更新生效！');
+        fetchOverview();
+      }
+    }
+
+    async function dispatchSimulatedMessage() {
+      const input = document.getElementById('quick-msg-input');
+      const text = input.value.trim();
+      if (!text) return;
+      const res = await fetch('/api/chat/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      if (res.ok) {
+        input.value = '';
+        showToast('任务消息已注入双引擎队列！');
+        fetchOverview();
+      }
+    }
+
+    async function stopTicket(ticketId) {
+      await fetch('/api/tickets/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket_id: ticketId, reason: '管理后台手动终止工单' })
+      });
+      showToast('已终止工单 ' + ticketId);
+      fetchOverview();
+    }
+
+    function openSwitchModal(ticketId, harness, provider, model, think) {
+      document.getElementById('switch-ticket-id').value = ticketId;
+      document.getElementById('switch-harness').value = harness;
+      document.getElementById('switch-provider').value = provider;
+      document.getElementById('switch-model').value = model;
+      document.getElementById('switch-think').value = think;
+      document.getElementById('switch-modal').style.display = 'flex';
+    }
+
+    function closeSwitchModal() {
+      document.getElementById('switch-modal').style.display = 'none';
+    }
+
+    async function submitSwitchTarget() {
+      const payload = {
+        ticket_id: document.getElementById('switch-ticket-id').value,
+        harness: document.getElementById('switch-harness').value,
+        provider: document.getElementById('switch-provider').value.trim(),
+        model: document.getElementById('switch-model').value.trim(),
+        think_effort: document.getElementById('switch-think').value,
+        reason: document.getElementById('switch-reason').value.trim() || '管理后台热切换'
+      };
+      const res = await fetch('/api/worker/switch-target', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        closeSwitchModal();
+        showToast('已热切换工单执行引擎！');
+        fetchOverview();
+      }
+    }
+  </script>
+</body>
+</html>
