@@ -325,13 +325,14 @@ async fn handle_test_jev(
                     ("remote-http-jev", Ok(res), format!("{out:?}"))
                 }
                 Err(e) => {
+                    let err_msg = e.to_string();
                     let h = HeuristicJevClassifier;
                     let res = h.classify(&ctx).await;
                     let out = run_jev_triage(&h, &input).await;
                     (
                         "fallback-heuristic-jev",
                         res.map_err(|_| e),
-                        format!("{out:?} (remote error: {e})"),
+                        format!("{out:?} (remote error: {err_msg})"),
                     )
                 }
             }
