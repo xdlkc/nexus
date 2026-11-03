@@ -800,17 +800,16 @@ pub async fn run_cli_harness_worker(
             } else if ev_type == "item.started" {
                 // An `agent_message` followed by `item.started` (e.g. `command_execution`) is an intermediate
                 // thinking update before running a tool—stream it immediately to Feishu!
-                if let Some(thought) = pending_agent_thought.take() {
-                    if sent_progress_count < 3
-                        && let Some(tx) = &ctx.progress_tx
-                    {
-                        let note = crate::core::recall::truncate_to_im_word_limit(
-                            &format!("💭 {thought}"),
-                            85,
-                        );
-                        let _ = tx.send(note);
-                        sent_progress_count += 1;
-                    }
+                if let Some(thought) = pending_agent_thought.take()
+                    && sent_progress_count < 3
+                    && let Some(tx) = &ctx.progress_tx
+                {
+                    let note = crate::core::recall::truncate_to_im_word_limit(
+                        &format!("💭 {thought}"),
+                        85,
+                    );
+                    let _ = tx.send(note);
+                    sent_progress_count += 1;
                 }
             }
         }
