@@ -20,9 +20,9 @@ use crate::workers::driver::{
 };
 use axum::{
     Json, Router,
-    extract::{Query, State},
-    http::StatusCode,
-    response::Html,
+    extract::{Path as AxumPath, Query, State},
+    http::{StatusCode, header},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -128,6 +128,7 @@ pub struct WorkerTraceQuery {
 pub fn build_http_router(state: SharedAppState) -> Router {
     Router::new()
         .route("/", get(handle_dashboard))
+        .route("/assets/{*path}", get(handle_web_asset))
         .route("/api/overview", get(handle_get_overview))
         .route("/api/state", get(handle_get_state))
         .route("/api/tickets", get(handle_get_tickets))
@@ -162,8 +163,32 @@ async fn handle_worker_models()
     }
 }
 
-async fn handle_dashboard() -> Html<&'static str> {
-    Html(DASHBOARD_HTML)
+async fn handle_dashboard() -> Html<String> {
+    let dist_index = std::path::Path::new("web/dist/index.html");
+    if let Ok(content) = std::fs::read_to_string(dist_index) {
+        return Html(content);
+    }
+    Html(DASHBOARD_HTML.to_owned())
+}
+
+async fn handle_web_asset(AxumPath(rel_path): AxumPath<String>) -> Response {
+    if rel_path.contains("..") {
+        return (StatusCode::BAD_REQUEST, "Invalid asset path").into_response();
+    }
+    let full_path = std::path::Path::new("web/dist/assets").join(&rel_path);
+    let Ok(bytes) = std::fs::read(&full_path) else {
+        return (StatusCode::NOT_FOUND, "Asset not found").into_response();
+    };
+    let mime = if rel_path.ends_with(".js") {
+        "application/javascript; charset=utf-8"
+    } else if rel_path.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else if rel_path.ends_with(".svg") {
+        "image/svg+xml"
+    } else {
+        "application/octet-stream"
+    };
+    ([(header::CONTENT_TYPE, mime)], bytes).into_response()
 }
 
 async fn handle_get_overview(State(app): State<SharedAppState>) -> Json<serde_json::Value> {

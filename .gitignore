@@ -9,3 +9,4 @@
 .env
 .env.*
 !.env.example
+web/node_modules/
