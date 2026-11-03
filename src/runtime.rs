@@ -459,6 +459,9 @@ where
                             }
                             summary.launched_assignments += 1;
                             self.store.save_engine_state(&eng.state, now)?;
+                            if let Ok(cfg) = self.config.lock() {
+                                consolidate_memory_file(&cfg, &eng.state);
+                            }
                         }
                         Err(e) => {
                             record_effect_failure(&mut eng, eff, e.to_string());
@@ -563,4 +566,74 @@ pub fn infer_ticket_repo(
         })
         .or_else(|| cfg.default_repo.clone())
         .or_else(|| cfg.github.repos.first().cloned())
+}
+
+/// Automatically consolidates completed Ticket milestones, PR links, and active identity settings
+/// into `<state_dir>/MEMORY.md` so persistent memory stays up to date after every task.
+pub fn consolidate_memory_file(cfg: &NexusConfig, state: &crate::core::engine::EngineState) {
+    let mem_path = cfg.state_dir.join("MEMORY.md");
+    let existing = std::fs::read_to_string(&mem_path).unwrap_or_default();
+    let mut updated = existing.clone();
+
+    if updated.trim().is_empty() {
+        updated = format!(
+            "# Nexus Persistent Memory (MEMORY.md)\n\n\
+             - **User**: 张俊博 (`ou_d59820429ccf6256556f7b9ac0c26f0f`)\n\
+             - **Host GitHub Account**: `xdlkc`\n\
+             - **Nexus Isolated GitHub Account**: `{}` (`{}`)\n\
+             - **Default Repository**: `{}`\n",
+            cfg.github.bot_login,
+            cfg.agent_identity.git_user_email,
+            cfg.default_repo.as_deref().unwrap_or("xdlkc/nexus")
+        );
+    }
+
+    let section_header = "## 近期自动沉淀结论与工单交付记录 (Auto-Consolidated Milestones)";
+    if !updated.contains(section_header) {
+        updated.push_str(&format!("\n{section_header}\n"));
+    }
+
+    // Sort tickets chronologically so milestones append in order
+    let mut tickets: Vec<_> = state.tickets.values().collect();
+    tickets.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+    for t in tickets {
+        let marker = format!("**[{}]**", t.id);
+        if updated.contains(&marker) {
+            continue;
+        }
+        let Some(last_asg) = t.assignments.last() else {
+            continue;
+        };
+        let Some(rep) = &last_asg.latest_report else {
+            continue;
+        };
+        if rep.status != crate::core::model::ReportStatus::Ready {
+            continue;
+        }
+        let repo_tag = t
+            .repo
+            .as_deref()
+            .or(cfg.default_repo.as_deref())
+            .unwrap_or("xdlkc/nexus");
+        let summary_one_line = rep
+            .summary
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ； ");
+        if summary_one_line.is_empty() {
+            continue;
+        }
+        updated.push_str(&format!(
+            "- {marker} (`{repo_tag}` · {}): {}\n",
+            t.title.replace('\n', " "),
+            summary_one_line
+        ));
+    }
+
+    if updated != existing {
+        let _ = std::fs::write(&mem_path, updated);
+    }
 }

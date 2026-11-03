@@ -211,6 +211,7 @@ async fn handle_get_overview(State(app): State<SharedAppState>) -> Json<serde_js
                 }
             }
         }
+        crate::runtime::consolidate_memory_file(&cfg_snapshot, &eng.state);
         serde_json::to_value(&eng.state).unwrap_or_default()
     };
     let (cfg_val, mem_path) = {
