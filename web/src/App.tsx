@@ -1147,47 +1147,108 @@ export default function App() {
                 {/* Section 3: Default Execution Engine & Jev */}
                 <div>
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-400 mb-3">
-                    3. 默认 Worker 引擎与 Tier-1 Jev 分诊配置
+                    3. 默认 Worker 引擎与 Tier-1 Jev / Tier-2 Router 分诊配置
                   </h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <FormField label="默认 Harness">
-                      <select
-                        value={defHarness}
-                        onChange={(e) => {
-                          setDefHarness(e.target.value as HarnessKind);
-                          setCfgDirty(true);
-                        }}
-                        className="form-input"
-                      >
-                        <option value="codex">codex (OpenAI Codex CLI)</option>
-                        <option value="claude-code">claude-code (Claude Code CLI)</option>
-                        <option value="pi-native">pi-native (内置原生 ReAct)</option>
-                        <option value="pi-rpc">pi-rpc (Pi Agent RPC)</option>
-                        <option value="opencode">opencode (OpenCode CLI)</option>
-                      </select>
-                    </FormField>
-                    <FormField label="默认 Provider">
-                      <input
-                        type="text"
-                        value={defProvider}
-                        onChange={(e) => {
-                          setDefProvider(e.target.value);
-                          setCfgDirty(true);
-                        }}
-                        className="form-input"
-                      />
-                    </FormField>
-                    <FormField label="默认 Model">
-                      <input
-                        type="text"
-                        value={defModel}
-                        onChange={(e) => {
-                          setDefModel(e.target.value);
-                          setCfgDirty(true);
-                        }}
-                        className="form-input"
-                      />
-                    </FormField>
+                  {(() => {
+                    const { providers, models } = getEngineCatalogOptions(
+                      defHarness,
+                      defProvider,
+                      defModel,
+                      piCatalog
+                    );
+                    return (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                        <FormField label="默认 Harness 驱动器">
+                          <select
+                            value={defHarness}
+                            onChange={(e) => {
+                              const nextH = e.target.value as HarnessKind;
+                              setDefHarness(nextH);
+                              const nextOpts = getEngineCatalogOptions(
+                                nextH,
+                                defProvider,
+                                defModel,
+                                piCatalog,
+                                true
+                              );
+                              setDefProvider(nextOpts.recommendedProvider);
+                              setDefModel(nextOpts.recommendedModel);
+                              setCfgDirty(true);
+                            }}
+                            className="form-input"
+                          >
+                            <option value="codex">codex (OpenAI Codex CLI)</option>
+                            <option value="claude-code">claude-code (Claude Code CLI)</option>
+                            <option value="pi-native">pi-native (内置原生 ReAct)</option>
+                            <option value="pi-rpc">pi-rpc (Pi Agent RPC)</option>
+                            <option value="opencode">opencode (OpenCode CLI)</option>
+                          </select>
+                        </FormField>
+
+                        <FormField label="默认 Provider (下拉选择)">
+                          <select
+                            value={defProvider}
+                            onChange={(e) => {
+                              const nextP = e.target.value;
+                              setDefProvider(nextP);
+                              const nextOpts = getEngineCatalogOptions(
+                                defHarness,
+                                nextP,
+                                defModel,
+                                piCatalog,
+                                true
+                              );
+                              setDefModel(nextOpts.recommendedModel);
+                              setCfgDirty(true);
+                            }}
+                            className="form-input"
+                          >
+                            {providers.map((p) => (
+                              <option key={p} value={p}>
+                                {p}
+                              </option>
+                            ))}
+                          </select>
+                        </FormField>
+
+                        <FormField label="默认 Model (下拉选择)">
+                          <select
+                            value={defModel}
+                            onChange={(e) => {
+                              setDefModel(e.target.value);
+                              setCfgDirty(true);
+                            }}
+                            className="form-input"
+                          >
+                            {models.map((m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            ))}
+                          </select>
+                        </FormField>
+
+                        <FormField label="默认思考程度 (`ThinkEffort`)">
+                          <select
+                            value={defThink}
+                            onChange={(e) => {
+                              setDefThink(e.target.value as ThinkEffort);
+                              setCfgDirty(true);
+                            }}
+                            className="form-input"
+                          >
+                            <option value="minimal">minimal (极简推理 · 最快)</option>
+                            <option value="low">low (轻量推理)</option>
+                            <option value="medium">medium (标准推理 · 推荐)</option>
+                            <option value="high">high (深度推理)</option>
+                            <option value="xhigh">xhigh (极限推理 · 复杂架构/死锁)</option>
+                          </select>
+                        </FormField>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
                     <FormField label="Jev 运行协议 (`jev.protocol`)">
                       <select
                         value={jevMode}
@@ -1197,10 +1258,54 @@ export default function App() {
                         }}
                         className="form-input"
                       >
-                        <option value="heuristic">本地启发式规则分诊</option>
+                        <option value="heuristic">本地启发式规则分诊 (零延迟)</option>
                         <option value="typesafe-system-one">远端 TypeSafe System-One</option>
                         <option value="openrouter-system-one">远端 OpenRouter System-One</option>
                         <option value="openai-decisions">远端 OpenAI Decisions</option>
+                      </select>
+                    </FormField>
+
+                    <FormField label="Jev 接口地址 (`jev.base_url`)">
+                      <input
+                        type="text"
+                        value={jevBaseUrl}
+                        onChange={(e) => {
+                          setJevBaseUrl(e.target.value);
+                          setCfgDirty(true);
+                        }}
+                        placeholder="https://api.typesafe.ai/v1"
+                        className="form-input"
+                      />
+                    </FormField>
+
+                    <FormField label="Jev 模型 (`jev.model`)">
+                      <select
+                        value={jevModel}
+                        onChange={(e) => {
+                          setJevModel(e.target.value);
+                          setCfgDirty(true);
+                        }}
+                        className="form-input"
+                      >
+                        <option value="jev-1">jev-1 (TypeSafe 官方分诊模型)</option>
+                        <option value="typesafe/jev-1">typesafe/jev-1 (OpenRouter)</option>
+                        <option value="gpt-4o-mini">gpt-4o-mini (OpenAI Decisions)</option>
+                        <option value="heuristic-jev-v1">heuristic-jev-v1 (本地规则)</option>
+                      </select>
+                    </FormField>
+
+                    <FormField label="Tier-2 Router 思考程度 (`router_llm.think_effort`)">
+                      <select
+                        value={routerThink}
+                        onChange={(e) => {
+                          setRouterThink(e.target.value as ThinkEffort);
+                          setCfgDirty(true);
+                        }}
+                        className="form-input"
+                      >
+                        <option value="low">low</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
                       </select>
                     </FormField>
                   </div>
@@ -1327,65 +1432,101 @@ export default function App() {
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
-              <FormField label="目标 Harness">
-                <select
-                  value={switchHarness}
-                  onChange={(e) => setSwitchHarness(e.target.value as HarnessKind)}
-                  className="form-input"
-                >
-                  <option value="codex">codex</option>
-                  <option value="claude-code">claude-code</option>
-                  <option value="pi-native">pi-native</option>
-                  <option value="pi-rpc">pi-rpc</option>
-                  <option value="opencode">opencode</option>
-                </select>
-              </FormField>
-              <FormField label="Provider">
-                <input
-                  type="text"
-                  value={switchProvider}
-                  onChange={(e) => setSwitchProvider(e.target.value)}
-                  className="form-input"
-                />
-              </FormField>
-              <FormField label="Model">
-                <input
-                  type="text"
-                  list="pi-models-datalist"
-                  value={switchModel}
-                  onChange={(e) => setSwitchModel(e.target.value)}
-                  className="form-input"
-                />
-                <datalist id="pi-models-datalist">
-                  {piCatalog
-                    .filter((m) => !switchProvider || m.provider === switchProvider)
-                    .map((m) => (
-                      <option key={`${m.provider}/${m.model}`} value={m.model} />
-                    ))}
-                </datalist>
-              </FormField>
-              <FormField label="ThinkEffort">
-                <select
-                  value={switchThink}
-                  onChange={(e) => setSwitchThink(e.target.value as ThinkEffort)}
-                  className="form-input"
-                >
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                  <option value="xhigh">xhigh</option>
-                </select>
-              </FormField>
-              <FormField label="切换原因 (写入 Handoff 卡片)">
-                <input
-                  type="text"
-                  value={switchReason}
-                  onChange={(e) => setSwitchReason(e.target.value)}
-                  className="form-input"
-                />
-              </FormField>
-            </div>
+            {(() => {
+              const { providers, models } = getEngineCatalogOptions(
+                switchHarness,
+                switchProvider,
+                switchModel,
+                piCatalog
+              );
+              return (
+                <div className="space-y-3 text-xs">
+                  <FormField label="目标 Harness">
+                    <select
+                      value={switchHarness}
+                      onChange={(e) => {
+                        const nextH = e.target.value as HarnessKind;
+                        setSwitchHarness(nextH);
+                        const nextOpts = getEngineCatalogOptions(
+                          nextH,
+                          switchProvider,
+                          switchModel,
+                          piCatalog,
+                          true
+                        );
+                        setSwitchProvider(nextOpts.recommendedProvider);
+                        setSwitchModel(nextOpts.recommendedModel);
+                      }}
+                      className="form-input"
+                    >
+                      <option value="codex">codex (OpenAI Codex CLI)</option>
+                      <option value="claude-code">claude-code (Claude Code CLI)</option>
+                      <option value="pi-native">pi-native (内置原生 ReAct)</option>
+                      <option value="pi-rpc">pi-rpc (Pi Agent RPC)</option>
+                      <option value="opencode">opencode (OpenCode CLI)</option>
+                    </select>
+                  </FormField>
+                  <FormField label="Provider (下拉选择)">
+                    <select
+                      value={switchProvider}
+                      onChange={(e) => {
+                        const nextP = e.target.value;
+                        setSwitchProvider(nextP);
+                        const nextOpts = getEngineCatalogOptions(
+                          switchHarness,
+                          nextP,
+                          switchModel,
+                          piCatalog,
+                          true
+                        );
+                        setSwitchModel(nextOpts.recommendedModel);
+                      }}
+                      className="form-input"
+                    >
+                      {providers.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
+                  </FormField>
+                  <FormField label="Model (下拉选择)">
+                    <select
+                      value={switchModel}
+                      onChange={(e) => setSwitchModel(e.target.value)}
+                      className="form-input"
+                    >
+                      {models.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </FormField>
+                  <FormField label="思考程度 (`ThinkEffort`)">
+                    <select
+                      value={switchThink}
+                      onChange={(e) => setSwitchThink(e.target.value as ThinkEffort)}
+                      className="form-input"
+                    >
+                      <option value="minimal">minimal (极简推理)</option>
+                      <option value="low">low (轻量推理)</option>
+                      <option value="medium">medium (标准推理)</option>
+                      <option value="high">high (深度推理)</option>
+                      <option value="xhigh">xhigh (极限推理)</option>
+                    </select>
+                  </FormField>
+                  <FormField label="切换原因 (写入 Handoff 卡片)">
+                    <input
+                      type="text"
+                      value={switchReason}
+                      onChange={(e) => setSwitchReason(e.target.value)}
+                      className="form-input"
+                    />
+                  </FormField>
+                </div>
+              );
+            })()}
 
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -1492,6 +1633,104 @@ const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({
     </div>
   </div>
 );
+
+const DEFAULT_PROVIDER_MODELS: Record<string, string[]> = {
+  openai: [
+    'gpt-6-astra',
+    'gpt-6.1-sol',
+    'gpt-6.1-terra',
+    'gpt-6-sol',
+    'gpt-6-luna',
+    'gpt-5.6-sol',
+    'gpt-5.6-cyber',
+    'gpt-5.5-pro',
+    'gpt-5.4',
+    'gpt-5.3-codex',
+    'gpt-5.3-codex-spark',
+    'o3-pro',
+    'o3',
+    'o4-mini',
+    'gpt-4.1',
+    'gpt-4o',
+  ],
+  anthropic: [
+    'claude-sonnet-4-6',
+    'claude-opus-4-6',
+    'claude-haiku-4-5',
+  ],
+  hub: [
+    'zenmux/anthropic/claude-sonnet-5.5',
+    'zenmux/anthropic/claude-opus-5.5',
+    'zenmux/anthropic/claude-haiku-5.5',
+    'deepseek/deepseek-v4-pro',
+    'deepseek/deepseek-flash',
+    'glm/glm-5.3',
+    'glm/glm-5.3-flash',
+    'kimi/k3.1-pro',
+    'kimi/k3.1-pro-highspeed',
+    'minimax/MiniMax-M3.1-Flash',
+  ],
+  xai: ['grok-4.7', 'grok-4.6', 'grok-4.5', 'grok-4.3'],
+};
+
+function getEngineCatalogOptions(
+  harness: HarnessKind,
+  currentProvider: string,
+  currentModel: string,
+  piCatalog: PiModelRow[],
+  resetOnChange = false
+): {
+  providers: string[];
+  models: string[];
+  recommendedProvider: string;
+  recommendedModel: string;
+} {
+  let baseProviders: string[];
+  if (harness === 'codex') {
+    baseProviders = ['openai'];
+  } else if (harness === 'claude-code') {
+    baseProviders = ['anthropic', 'hub'];
+  } else if (harness === 'pi-native') {
+    baseProviders = ['openai', 'anthropic'];
+  } else {
+    const fromPi = Array.from(new Set(piCatalog.map((r) => r.provider)));
+    baseProviders = Array.from(
+      new Set([...fromPi, 'openai', 'anthropic', 'hub', 'xai'])
+    );
+  }
+
+  const recommendedProvider = baseProviders.includes(currentProvider)
+    ? currentProvider
+    : baseProviders[0] || 'openai';
+
+  const providers =
+    !resetOnChange && currentProvider && !baseProviders.includes(currentProvider)
+      ? [currentProvider, ...baseProviders]
+      : baseProviders;
+
+  const activeProvider = resetOnChange ? recommendedProvider : currentProvider || recommendedProvider;
+  const fromCatalog = piCatalog
+    .filter((r) => r.provider === activeProvider)
+    .map((r) => r.model);
+  const builtin = DEFAULT_PROVIDER_MODELS[activeProvider] || [];
+  const mergedModels = Array.from(new Set([...builtin, ...fromCatalog]));
+
+  const recommendedModel = mergedModels.includes(currentModel)
+    ? currentModel
+    : mergedModels[0] || 'gpt-6-astra';
+
+  const models =
+    !resetOnChange && currentModel && !mergedModels.includes(currentModel)
+      ? [currentModel, ...mergedModels]
+      : mergedModels;
+
+  return {
+    providers,
+    models,
+    recommendedProvider,
+    recommendedModel,
+  };
+}
 
 function formatShortTime(iso?: string): string {
   if (!iso) return '';
