@@ -308,7 +308,15 @@ pub fn build_worker_prompt_with_memory(
 
     sections.push(format!(
         "## Operating Rules & Shims\n\
-         1. Use `gh-agent` for GitHub operations, `lark-bot` for Feishu operations, and `gws-agent` for Google Workspace.\n\
+         1. Use `gh-agent` for GitHub operations, `lark-bot` for Feishu operations, `dws-agent` for DingTalk operations, and `gws-agent` for Google Workspace:\n\
+            - **Rich Text (Markdown)**: Both DingTalk (`dws-agent`) and Feishu (`lark-bot`) render Markdown rich text (`**bold**`, `### headings`, lists, code blocks, links, `![alt](https://...)` web images) directly in your final reply.\n\
+            - **Images & Files in DingTalk (`dws-agent`)**:\n\
+              - Web image as bot: `dws-agent chat message send-by-bot --robot-code dingztmnesaskuiyqfup --conversation-id <cid> --msg-type image --image-url \"https://...\" -y`\n\
+              - Local file as bot: `dws-agent chat message send-by-bot --robot-code dingztmnesaskuiyqfup --conversation-id <cid> --msg-type file --file-path ./relative/path -y`\n\
+              - Rich text with inline local image: include `![说明](./relative/image.png)` in your reply or run `dws-agent chat +messages-send --as user --chat-id <cid> --markdown \"![说明](./relative/image.png)\" --idempotency-key <key> -y`\n\
+            - **Images & Files in Feishu (`lark-bot`)**:\n\
+              - Local or web image as bot: `lark-bot im +messages-send --as bot --chat-id <oc_id> --image ./relative/image.png`\n\
+              - Rich text (`post`) as bot: `lark-bot im +messages-send --as bot --chat-id <oc_id> --markdown \"### Title\\n- item\"`\n\
          2. When you need full spilled text for a truncated trigger or thread, run `nexus worker read <uri>` (or call `orchestrator_read`).\n\
          3. If a follow-up trigger in your inbox is unrelated to this Ticket, hand it back via `nexus worker handback <trigger_id> --reason \"...\"`.\n\
          4. Before running shell commands or inspecting/modifying files, first output a short 1-sentence Chinese thinking/progress note (<= 45 chars, e.g. \"我先查看一下仓库结构和最近提交记录。\") so Nexus can stream your live thinking process to the user in real time.\n\

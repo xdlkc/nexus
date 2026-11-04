@@ -679,6 +679,36 @@ impl ChannelAdapter for FeishuAdapter {
             anyhow::bail!("FeishuAdapter cannot deliver non-FeishuTopic address");
         };
 
+        let has_rich_markdown = message.body.contains("![")
+            || message.body.contains("**")
+            || message.body.contains("```")
+            || message.body.contains("\n#")
+            || message.body.starts_with('#')
+            || message.body.contains("\n- ")
+            || message.body.contains("\n1. ");
+
+        if has_rich_markdown {
+            let mut cmd = self.build_command();
+            cmd.args([
+                "im",
+                "+messages-reply",
+                "--message-id",
+                reply_to_message_id,
+                "--markdown",
+                &message.body,
+                "--as",
+                "bot",
+            ]);
+            if self.config.reply_in_thread {
+                cmd.arg("--reply-in-thread");
+            }
+            if let Ok(out) = cmd.output().await
+                && out.status.success()
+            {
+                return Ok(());
+            }
+        }
+
         let endpoint = format!("/open-apis/im/v1/messages/{reply_to_message_id}/reply");
         let content_json = serde_json::json!({ "text": message.body }).to_string();
         let payload = serde_json::json!({

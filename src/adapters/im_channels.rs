@@ -447,12 +447,85 @@ impl ChannelAdapter for DingtalkAdapter {
             anyhow::bail!("DingtalkAdapter requires GenericIm channel address");
         };
 
+        let trimmed_body = message.body.trim();
+        let is_local_markdown_image = trimmed_body.contains("![")
+            && trimmed_body.contains("](")
+            && !trimmed_body.contains("](http://")
+            && !trimmed_body.contains("](https://");
+
+        // User-identity `+messages-send --markdown` supports auto-uploading local `![alt](./path.png)` images as single rich-text post.
+        if is_local_markdown_image {
+            let idem_key = format!("nexus-{}", chrono::Utc::now().timestamp_millis());
+            let rich_out = self
+                .build_command()
+                .args([
+                    "chat",
+                    "+messages-send",
+                    "--as",
+                    "user",
+                    "--chat-id",
+                    conversation_id,
+                    "--markdown",
+                    trimmed_body,
+                    "--idempotency-key",
+                    &idem_key,
+                    "--yes",
+                    "--format",
+                    "json",
+                ])
+                .output()
+                .await;
+            if let Ok(o) = rich_out
+                && o.status.success()
+            {
+                return Ok(());
+            }
+        }
+
         if let Some(robot_code) = self
             .config
             .robot_code
             .as_deref()
             .filter(|s| !s.trim().is_empty())
         {
+            // If body is a standalone public image URL, send as a native bot image message.
+            let is_single_image_url = (trimmed_body.starts_with("https://")
+                || trimmed_body.starts_with("http://"))
+                && !trimmed_body.contains(char::is_whitespace)
+                && (trimmed_body.ends_with(".png")
+                    || trimmed_body.ends_with(".jpg")
+                    || trimmed_body.ends_with(".jpeg")
+                    || trimmed_body.ends_with(".gif")
+                    || trimmed_body.ends_with(".webp"));
+
+            if is_single_image_url {
+                let img_out = self
+                    .build_command()
+                    .args([
+                        "chat",
+                        "message",
+                        "send-by-bot",
+                        "--robot-code",
+                        robot_code,
+                        "--conversation-id",
+                        conversation_id,
+                        "--msg-type",
+                        "image",
+                        "--image-url",
+                        trimmed_body,
+                        "--yes",
+                        "--format",
+                        "json",
+                    ])
+                    .output()
+                    .await;
+                if let Ok(o) = img_out
+                    && o.status.success()
+                {
+                    return Ok(());
+                }
+            }
+
             // Try quoted reply via `send-by-bot --reply <msg_id> --ref-sender <sender_id>` first if thread_id carries `msg_id|sender_id`
             if let Some((reply_msg_id, ref_sender)) = thread_id
                 .as_deref()
