@@ -789,35 +789,87 @@ impl Engine {
         let ticket_ids: Vec<String> = self.state.tickets.keys().cloned().collect();
         for tid in ticket_ids {
             let mut completed_notice: Option<(ChannelAddress, String)> = None;
+            let mut resumed_assignment_to_launch: Option<String> = None;
+            let inp_id = self.next_id("inp");
             if let Some(ticket) = self.state.tickets.get_mut(&tid) {
                 if !ticket.is_open() {
                     continue;
                 }
                 let mut touched = false;
                 for f in &mut ticket.follows {
-                    if f.thread_key == thread_key {
+                    if f.thread_key == thread_key && f.closed.is_none() {
                         f.closed = Some(close_record.clone());
                         touched = true;
                     }
                 }
                 if touched && ticket.follows_done() {
-                    ticket.ended = Some(TicketEnd {
-                        outcome: outcome.to_owned(),
-                        by_person_stop: false,
-                        reason: format!("Followed thread {thread_key} {outcome}"),
-                        at: now.to_owned(),
-                    });
-                    if let Some(reply_ch) = ticket
-                        .channels
-                        .iter()
-                        .find(|c| c.is_low_noise_im())
-                        .or_else(|| ticket.channels.first())
-                        .cloned()
-                    {
-                        completed_notice =
-                            Some((reply_ch, format!("PR {thread_key} is now {outcome}.")));
+                    let was_waiting_for_post_merge = ticket
+                        .latest_assignment()
+                        .and_then(|a| a.latest_report.as_ref())
+                        .is_some_and(|r| r.status == ReportStatus::Waiting);
+
+                    if was_waiting_for_post_merge {
+                        ticket.inputs.push(TicketInput {
+                            id: inp_id,
+                            kind: TicketInputKind::RouterNote {
+                                text: format!(
+                                    "Followed PR `{thread_key}` is now `{outcome}`. Please proceed with the remaining post-merge steps on `origin/main` (e.g. fetch `origin/main`, create & push the release tag, wait for or publish the formal GitHub Release) and call `worker_report` with `status=\"ready\"` when finished."
+                                ),
+                            },
+                            from_person: true,
+                            read_by_worker: false,
+                            handed_back_reason: None,
+                            at: now.to_owned(),
+                        });
+                        let target = ticket.current_target();
+                        let worktree_dir = ticket
+                            .latest_assignment()
+                            .map(|a| a.worktree_dir.clone())
+                            .unwrap_or_else(|| {
+                                format!("{}/{}", self.state.worktree_root, ticket.short_name)
+                            });
+                        let assign_id =
+                            format!("asg-{}-{}", ticket.id, ticket.assignments.len() + 1);
+                        ticket.assignments.push(Assignment {
+                            id: assign_id.clone(),
+                            ticket_id: ticket.id.clone(),
+                            target,
+                            status: AssignmentStatus::Pending,
+                            worktree_dir,
+                            started_at: now.to_owned(),
+                            ended_at: None,
+                            latest_report: None,
+                        });
+                        resumed_assignment_to_launch = Some(assign_id);
+                    } else {
+                        ticket.ended = Some(TicketEnd {
+                            outcome: outcome.to_owned(),
+                            by_person_stop: false,
+                            reason: format!("Followed thread {thread_key} {outcome}"),
+                            at: now.to_owned(),
+                        });
+                        if let Some(reply_ch) = ticket
+                            .channels
+                            .iter()
+                            .find(|c| c.is_low_noise_im())
+                            .or_else(|| ticket.channels.first())
+                            .cloned()
+                        {
+                            completed_notice =
+                                Some((reply_ch, format!("PR {thread_key} is now {outcome}.")));
+                        }
                     }
                 }
+            }
+            if let Some(assign_id) = resumed_assignment_to_launch {
+                self.enqueue_effect(
+                    format!("launch:{tid}"),
+                    EffectKind::LaunchAssignment {
+                        ticket_id: tid.clone(),
+                        assignment_id: assign_id,
+                    },
+                    now,
+                );
             }
             if let Some((ch, msg)) = completed_notice {
                 let _ = self.queue_outbox_message(

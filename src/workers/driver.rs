@@ -398,19 +398,30 @@ impl BackgroundJobManager {
         }
     }
 
-    pub async fn job_output(&self, job_id: &str) -> anyhow::Result<serde_json::Value> {
+    pub async fn job_output(
+        &self,
+        job_id: &str,
+        wait_seconds: u64,
+    ) -> anyhow::Result<serde_json::Value> {
         let job = self
             .jobs
             .get(job_id)
             .ok_or_else(|| anyhow::anyhow!("Background job {job_id} not found"))?;
-        let out = job.output_buffer.lock().await.clone();
-        let exit_code = *job.finished.lock().await;
-        Ok(serde_json::json!({
-            "job_id": job_id,
-            "running": exit_code.is_none(),
-            "exit_code": exit_code,
-            "output": out,
-        }))
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(wait_seconds.min(60));
+        loop {
+            let exit_code = *job.finished.lock().await;
+            if exit_code.is_some() || tokio::time::Instant::now() >= deadline {
+                let out = job.output_buffer.lock().await.clone();
+                return Ok(serde_json::json!({
+                    "job_id": job_id,
+                    "running": exit_code.is_none(),
+                    "exit_code": exit_code,
+                    "output": out,
+                }));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
     }
 
     pub async fn kill_job(&mut self, job_id: &str) -> anyhow::Result<serde_json::Value> {
@@ -476,10 +487,13 @@ pub fn pi_native_tool_specs() -> Vec<LlmToolSpec> {
         },
         LlmToolSpec {
             name: "job_output".to_owned(),
-            description: "Read the latest stdout/stderr and status of a backgrounded shell job.".to_owned(),
+            description: "Wait up to `wait_seconds` (default 15, max 60) and read the latest stdout/stderr and status of a backgrounded shell job.".to_owned(),
             parameters: serde_json::json!({
                 "type": "object",
-                "properties": { "job_id": { "type": "string" } },
+                "properties": {
+                    "job_id": { "type": "string" },
+                    "wait_seconds": { "type": "integer", "description": "Seconds to wait for job completion before returning (default 15, max 60)" }
+                },
                 "required": ["job_id"]
             }),
         },
@@ -833,7 +847,12 @@ pub async fn run_pi_native_worker<L: LlmClient>(
                         .get("job_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    let res = match jobs.job_output(job_id).await {
+                    let wait_seconds = tc
+                        .arguments
+                        .get("wait_seconds")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(15);
+                    let res = match jobs.job_output(job_id, wait_seconds).await {
                         Ok(val) => val.to_string(),
                         Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
                     };
