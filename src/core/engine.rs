@@ -647,10 +647,16 @@ impl Engine {
             }
 
             if let Some(ch) = ticket.channels.first().cloned() {
-                if let Some(q) = question {
+                if let Some(q) = question.filter(|s| !s.trim().is_empty()) {
                     should_send_message = Some((ch, OutboxPurpose::Attention, q));
                 } else if status == ReportStatus::Ready {
                     should_send_message = Some((ch, OutboxPurpose::Result, summary_str));
+                } else if matches!(
+                    status,
+                    ReportStatus::Waiting | ReportStatus::Blocked | ReportStatus::Failed
+                ) && !summary_str.trim().is_empty()
+                {
+                    should_send_message = Some((ch, OutboxPurpose::Attention, summary_str));
                 }
             }
         }
@@ -801,14 +807,15 @@ impl Engine {
                         reason: format!("Followed thread {thread_key} {outcome}"),
                         at: now.to_owned(),
                     });
-                    if let Some(im_ch) = ticket
+                    if let Some(reply_ch) = ticket
                         .channels
                         .iter()
                         .find(|c| c.is_low_noise_im())
+                        .or_else(|| ticket.channels.first())
                         .cloned()
                     {
                         completed_notice =
-                            Some((im_ch, format!("PR {thread_key} is now {outcome}.")));
+                            Some((reply_ch, format!("PR {thread_key} is now {outcome}.")));
                     }
                 }
             }

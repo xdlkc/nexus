@@ -674,7 +674,7 @@ pub async fn run_pi_native_worker<L: LlmClient>(
                         .get("question")
                         .and_then(|v| v.as_str())
                         .map(str::to_owned);
-                    let pr_thread = tc
+                    let mut pr_thread = tc
                         .arguments
                         .get("pull_request_thread_key")
                         .and_then(|v| v.as_str())
@@ -686,6 +686,12 @@ pub async fn run_pi_native_worker<L: LlmClient>(
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.trim().is_empty())
                         .map(str::to_owned);
+                    if pr_thread.is_none()
+                        && let Some(u) = &pr_url
+                        && let Some((derived_key, _)) = extract_github_pr_reference(u)
+                    {
+                        pr_thread = Some(derived_key);
+                    }
                     append_worker_trace_step(
                         &ctx.state_dir,
                         &mut trace_seq,

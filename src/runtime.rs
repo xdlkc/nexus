@@ -129,13 +129,24 @@ where
             if let Ok(poll_out) = adapter.poll(cursor.as_deref()).await {
                 let mut eng = self.engine.lock().unwrap();
                 for trig in poll_out.triggers {
-                    let strength = evaluate_gate_strength(
+                    let is_subscribed_thread = eng
+                        .state
+                        .threads
+                        .get(&trig.thread_key)
+                        .is_some_and(|t| !t.subscribed_tickets.is_empty());
+                    let mut strength = evaluate_gate_strength(
                         &trig.actor_id,
                         trig.actor_is_bot,
-                        trig.addressed_agent,
+                        trig.addressed_agent || is_subscribed_thread,
                         &policy,
                         accept_mode,
                     );
+                    if is_subscribed_thread
+                        && !trig.actor_is_bot
+                        && strength == crate::core::model::AdmissionStrength::NotAdmitted
+                    {
+                        strength = crate::core::model::AdmissionStrength::Explicit;
+                    }
                     eng.receive_trigger(trig, strength);
                     summary.polled_triggers += 1;
                 }
@@ -155,13 +166,24 @@ where
             if let Ok(poll_out) = adapter.poll(cursor.as_deref()).await {
                 let mut eng = self.engine.lock().unwrap();
                 for trig in poll_out.triggers {
-                    let strength = evaluate_gate_strength(
+                    let is_subscribed_thread = eng
+                        .state
+                        .threads
+                        .get(&trig.thread_key)
+                        .is_some_and(|t| !t.subscribed_tickets.is_empty());
+                    let mut strength = evaluate_gate_strength(
                         &trig.actor_id,
                         trig.actor_is_bot,
-                        trig.addressed_agent,
+                        trig.addressed_agent || is_subscribed_thread,
                         &policy,
                         accept_mode,
                     );
+                    if is_subscribed_thread
+                        && !trig.actor_is_bot
+                        && strength == crate::core::model::AdmissionStrength::NotAdmitted
+                    {
+                        strength = crate::core::model::AdmissionStrength::Explicit;
+                    }
                     eng.receive_trigger(trig, strength);
                     summary.polled_triggers += 1;
                 }
@@ -179,13 +201,24 @@ where
             if let Ok(poll_out) = adapter.poll(cursor.as_deref()).await {
                 let mut eng = self.engine.lock().unwrap();
                 for trig in poll_out.triggers {
-                    let strength = evaluate_gate_strength(
+                    let is_subscribed_thread = eng
+                        .state
+                        .threads
+                        .get(&trig.thread_key)
+                        .is_some_and(|t| !t.subscribed_tickets.is_empty());
+                    let mut strength = evaluate_gate_strength(
                         &trig.actor_id,
                         trig.actor_is_bot,
-                        trig.addressed_agent,
+                        trig.addressed_agent || is_subscribed_thread,
                         &policy,
                         accept_mode,
                     );
+                    if is_subscribed_thread
+                        && !trig.actor_is_bot
+                        && strength == crate::core::model::AdmissionStrength::NotAdmitted
+                    {
+                        strength = crate::core::model::AdmissionStrength::Explicit;
+                    }
                     eng.receive_trigger(trig, strength);
                     summary.polled_triggers += 1;
                 }
@@ -466,7 +499,7 @@ where
                         state_dir,
                         api_url,
                         prompt,
-                        max_turns: 16,
+                        max_turns: 28,
                         progress_tx: Some(progress_tx),
                     };
 

@@ -204,6 +204,43 @@ pub fn build_worker_prompt_with_memory(
         }
     }
 
+    // Include prior ticket inputs and previous assignment reports when resuming a ticket across multiple turns.
+    let prior_inputs: Vec<_> = ticket
+        .inputs
+        .iter()
+        .filter(|i| i.read_by_worker && i.handed_back_reason.is_none())
+        .collect();
+    let prior_assignments: Vec<_> = ticket
+        .assignments
+        .iter()
+        .filter(|a| a.id != assignment.id && a.latest_report.is_some())
+        .collect();
+    if !prior_inputs.is_empty() || !prior_assignments.is_empty() {
+        let mut prior_lines = vec!["## Prior Ticket History & Completed Assignments".to_owned()];
+        for inp in prior_inputs {
+            if let TicketInputKind::TriggerFanOut {
+                trigger_id,
+                thread_key,
+                text_preview,
+            } = &inp.kind
+            {
+                prior_lines.push(format!(
+                    "- **[Prior Input `{}` | Trigger `trigger/{}` | Thread `{}`]**:\n  {}",
+                    inp.id, trigger_id, thread_key, text_preview
+                ));
+            }
+        }
+        for prev_asg in prior_assignments {
+            if let Some(rep) = &prev_asg.latest_report {
+                prior_lines.push(format!(
+                    "- **[Prior Assignment `{}` (`{:?}`)]**: {}",
+                    prev_asg.id, rep.status, rep.summary
+                ));
+            }
+        }
+        sections.push(prior_lines.join("\n"));
+    }
+
     // Include any unread inputs (including cross-harness Handoff cards and human follow-ups).
     let unread: Vec<_> = ticket
         .inputs

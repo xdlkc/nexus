@@ -30,7 +30,33 @@ pub async fn prepare_worktree(
     if let Some(repo_dir) = repo_checkout
         && repo_dir.join(".git").exists()
     {
+        let _ = Command::new("git")
+            .current_dir(repo_dir)
+            .args(["fetch", "origin", "main", "--tags", "-q"])
+            .output()
+            .await;
+
         let branch = format!("agent/{short_name}");
+        let from_origin_main = Command::new("git")
+            .current_dir(repo_dir)
+            .args([
+                "worktree",
+                "add",
+                "-B",
+                &branch,
+                &abs_worktree_dir.to_string_lossy(),
+                "origin/main",
+            ])
+            .output()
+            .await;
+
+        if let Ok(out) = from_origin_main
+            && out.status.success()
+            && abs_worktree_dir.exists()
+        {
+            return Ok(());
+        }
+
         let output = Command::new("git")
             .current_dir(repo_dir)
             .args([

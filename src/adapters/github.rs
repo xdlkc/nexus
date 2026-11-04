@@ -234,7 +234,7 @@ pub fn parse_github_issue_comments_json(
             .unwrap_or("")
             .to_owned();
         if let Some(since) = since_iso
-            && !updated_at.is_empty() && updated_at.as_str() <= since {
+            && !updated_at.is_empty() && updated_at.as_str() < since {
                 continue;
             }
         if !updated_at.is_empty() {
@@ -253,14 +253,14 @@ pub fn parse_github_issue_comments_json(
         if body.contains("<!-- nexus-agent -->") {
             continue;
         }
+        if login.eq_ignore_ascii_case(&cfg.bot_login) {
+            continue;
+        }
         let user_type = item
             .pointer("/user/type")
             .and_then(|v| v.as_str())
             .unwrap_or("User");
         let actor_is_bot = user_type.eq_ignore_ascii_case("Bot") || login.ends_with("[bot]");
-        if actor_is_bot && login.eq_ignore_ascii_case(&cfg.bot_login) {
-            continue;
-        }
 
         let issue_url = item
             .get("issue_url")
@@ -282,10 +282,11 @@ pub fn parse_github_issue_comments_json(
             format!("github:issue:{repo}#{number}")
         };
 
-        let addressed = body
-            .to_lowercase()
-            .contains(&format!("@{}", cfg.bot_login.to_lowercase()))
-            || body.to_lowercase().contains("@nexus");
+        let lower = body.to_lowercase();
+        let addressed = !actor_is_bot
+            || lower.contains(&format!("@{}", cfg.bot_login.to_lowercase()))
+            || lower.contains("@nexus")
+            || lower.contains("奈克斯");
         let (clean_text, inline_target) = parse_inline_target_directive(body);
 
         triggers.push(Trigger {
@@ -340,7 +341,7 @@ pub fn parse_github_review_comments_json(
             .unwrap_or("")
             .to_owned();
         if let Some(since) = since_iso
-            && !updated_at.is_empty() && updated_at.as_str() <= since {
+            && !updated_at.is_empty() && updated_at.as_str() < since {
                 continue;
             }
         if !updated_at.is_empty() {
@@ -359,14 +360,14 @@ pub fn parse_github_review_comments_json(
         if body.contains("<!-- nexus-agent -->") {
             continue;
         }
+        if login.eq_ignore_ascii_case(&cfg.bot_login) {
+            continue;
+        }
         let user_type = item
             .pointer("/user/type")
             .and_then(|v| v.as_str())
             .unwrap_or("User");
         let actor_is_bot = user_type.eq_ignore_ascii_case("Bot") || login.ends_with("[bot]");
-        if actor_is_bot && login.eq_ignore_ascii_case(&cfg.bot_login) {
-            continue;
-        }
 
         let pr_url = item
             .get("pull_request_url")
@@ -378,10 +379,11 @@ pub fn parse_github_review_comments_json(
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(1);
         let path = item.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        let addressed = body
-            .to_lowercase()
-            .contains(&format!("@{}", cfg.bot_login.to_lowercase()))
-            || body.to_lowercase().contains("@nexus");
+        let lower = body.to_lowercase();
+        let addressed = !actor_is_bot
+            || lower.contains(&format!("@{}", cfg.bot_login.to_lowercase()))
+            || lower.contains("@nexus")
+            || lower.contains("奈克斯");
         let (clean_text, inline_target) = parse_inline_target_directive(body);
         let full_text = if path.is_empty() {
             clean_text
@@ -448,9 +450,9 @@ impl SourceAdapter for GithubAdapter {
 
             let ic_endpoint = match cursor {
                 Some(since) => {
-                    format!("repos/{repo}/issues/comments?since={since}&per_page=30")
+                    format!("repos/{repo}/issues/comments?sort=updated&direction=desc&since={since}&per_page=30")
                 }
-                None => format!("repos/{repo}/issues/comments?per_page=30"),
+                None => format!("repos/{repo}/issues/comments?sort=updated&direction=desc&per_page=30"),
             };
             let ic_out = self
                 .build_command()
@@ -472,9 +474,9 @@ impl SourceAdapter for GithubAdapter {
 
             let rc_endpoint = match cursor {
                 Some(since) => {
-                    format!("repos/{repo}/pulls/comments?since={since}&per_page=30")
+                    format!("repos/{repo}/pulls/comments?sort=updated&direction=desc&since={since}&per_page=30")
                 }
-                None => format!("repos/{repo}/pulls/comments?per_page=30"),
+                None => format!("repos/{repo}/pulls/comments?sort=updated&direction=desc&per_page=30"),
             };
             let rc_out = self
                 .build_command()
