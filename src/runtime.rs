@@ -650,17 +650,44 @@ pub fn infer_ticket_repo(
     )
     .to_lowercase();
 
+    let combined_compact = combined_lower.replace(['-', '_'], "");
+    let default_repo_lower = cfg
+        .default_repo
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+
+    // Order candidate repos so non-default repos are checked before `default_repo`
+    // (because prompts often mention "Nexus" as the assistant's own name).
+    let mut ordered_repos: Vec<&String> = cfg
+        .github
+        .repos
+        .iter()
+        .filter(|r| r.to_lowercase() != default_repo_lower)
+        .collect();
+    ordered_repos.extend(
+        cfg.github
+            .repos
+            .iter()
+            .filter(|r| r.to_lowercase() == default_repo_lower),
+    );
+
     channel_repo
         .or(sub_repo)
         .or_else(|| {
-            cfg.github
-                .repos
+            ordered_repos
                 .iter()
                 .find(|r| {
-                    let short = r.rsplit('/').next().unwrap_or(r).to_lowercase();
-                    !short.is_empty() && combined_lower.contains(&short)
+                    let full_lower = r.to_lowercase();
+                    let short = full_lower.rsplit('/').next().unwrap_or(&full_lower);
+                    let short_compact = short.replace(['-', '_'], "");
+                    !short.is_empty()
+                        && (combined_lower.contains(&full_lower)
+                            || combined_lower.contains(short)
+                            || (!short_compact.is_empty()
+                                && combined_compact.contains(&short_compact)))
                 })
-                .cloned()
+                .map(|r| (*r).clone())
         })
         .or_else(|| cfg.default_repo.clone())
         .or_else(|| cfg.github.repos.first().cloned())
