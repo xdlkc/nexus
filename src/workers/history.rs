@@ -127,6 +127,15 @@ impl HistoryScope {
             .filter_map(|ch| conversation(ch, state))
             .collect();
         let mut addressless_threads = Vec::new();
+        let mut rejected_input_threads = std::collections::BTreeSet::new();
+        let matches_origin = |tr: &Trigger| {
+            tr.source_id == ticket.mandate.source_id
+                && tr.thread_key == ticket.origin_thread_key
+                && (!conversations.iter().any(|ch| ch.source == tr.source_id)
+                    || conversations
+                        .iter()
+                        .any(|ch| ch.source == tr.source_id && ch.kind == tr.source_kind))
+        };
         let mut add_trigger = |tr: &Trigger| {
             if present(&tr.source_id) && present(&tr.thread_key) {
                 addressless_threads.push((
@@ -136,7 +145,11 @@ impl HistoryScope {
                 ));
             }
         };
-        if let Some(origin) = state.triggers.get(&ticket.origin_trigger_id) {
+        // Adapter trigger IDs can collide across configured accounts. The
+        // ticket's durable origin/source bindings outrank a current ID lookup.
+        if let Some(origin) = state.triggers.get(&ticket.origin_trigger_id)
+            && matches_origin(origin)
+        {
             add_trigger(origin);
         }
         for input in &ticket.inputs {
@@ -146,10 +159,32 @@ impl HistoryScope {
                     thread_key,
                     ..
                 } = &input.kind
-                && let Some(tr) = state.triggers.get(trigger_id)
-                && tr.thread_key == *thread_key
             {
-                add_trigger(tr);
+                let is_origin = trigger_id == &ticket.origin_trigger_id
+                    || thread_key == &ticket.origin_thread_key;
+                let valid = state.triggers.get(trigger_id).filter(|tr| {
+                    tr.thread_key == *thread_key
+                        && if is_origin {
+                            thread_key == &ticket.origin_thread_key && matches_origin(tr)
+                        } else {
+                            tr.reply_channel
+                                .as_ref()
+                                .and_then(|ch| conversation(ch, state))
+                                .is_some_and(|identity| {
+                                    identity.source == tr.source_id
+                                        && identity.kind == tr.source_kind
+                                        && conversations.contains(&identity)
+                                })
+                        }
+                });
+                if let Some(tr) = valid {
+                    add_trigger(tr);
+                } else if !is_origin {
+                    // A rejected mutable lookup cannot be reauthorized through
+                    // a same-key Thread record. Explicit ticket channels still
+                    // provide their independently verified conversation context.
+                    rejected_input_threads.insert(thread_key.clone());
+                }
             }
         }
         for key in ticket
@@ -158,6 +193,9 @@ impl HistoryScope {
             .chain(&ticket.context_subscriptions)
             .chain(ticket.follows.iter().map(|follow| &follow.thread_key))
         {
+            if rejected_input_threads.contains(key) {
+                continue;
+            }
             if let Some(thread) = state.threads.get(key)
                 && present(&thread.source_id)
                 && present(key)

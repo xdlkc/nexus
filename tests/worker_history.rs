@@ -341,6 +341,101 @@ fn colliding_thread_records_cannot_broaden_the_origin_to_another_account() {
 }
 
 #[test]
+fn overwritten_origin_cannot_authorize_another_accounts_addressless_history() {
+    for keep_initial_input in [false, true] {
+        for changed_field in ["source", "thread"] {
+            let value = addresses()[3].clone();
+            let (mut ticket, mut state) = fixture(address(value.clone()));
+            if !keep_initial_input {
+                ticket.inputs.clear();
+            }
+            let mut overwritten = state.triggers["origin"].clone();
+            if changed_field == "source" {
+                overwritten.source_id = "another-account".into();
+                let mut other = value.clone();
+                other["source_id"] = json!("another-account");
+                overwritten.reply_channel = Some(address(other));
+            } else {
+                overwritten.thread_key = "another-thread".into();
+            }
+            state.triggers.insert("origin".into(), overwritten.clone());
+            let mut forbidden = overwritten;
+            forbidden.id = "forbidden-addressless".into();
+            forbidden.text = "forbidden-addressless".into();
+            forbidden.reply_channel = None;
+            state.triggers.insert(forbidden.id.clone(), forbidden);
+
+            let mut allowed = trigger("allowed-addressless", address(value), "origin-thread");
+            allowed.reply_channel = None;
+            state.triggers.insert(allowed.id.clone(), allowed);
+            let result = history(&ticket, &state);
+            assert!(
+                !result.contains("forbidden"),
+                "{changed_field} / initial input {keep_initial_input}: {result}"
+            );
+            assert!(result.contains("allowed-addressless"), "{result}");
+        }
+    }
+}
+
+#[test]
+fn overwritten_non_origin_input_cannot_override_explicit_channel_bindings() {
+    for overwrite_thread_record in [false, true] {
+        for changed_field in ["source", "thread"] {
+            let (ticket, state) = fixture(address(addresses()[3].clone()));
+            let mut linked_address = addresses()[3].clone();
+            linked_address["thread_id"] = json!("linked-gmail-thread");
+            let mut engine = Engine::from_state(state);
+            engine.receive_trigger(
+                trigger(
+                    "linked-input",
+                    address(linked_address.clone()),
+                    "linked-thread",
+                ),
+                AdmissionStrength::Explicit,
+            );
+            engine
+                .attach_trigger_to_ticket("linked-input", &ticket.id, "2026-11-05T00:00:01Z")
+                .unwrap();
+            let ticket = engine.state.tickets[&ticket.id].clone();
+            let mut state = engine.state;
+            let mut overwritten = state.triggers["linked-input"].clone();
+            if changed_field == "source" {
+                overwritten.source_id = "another-account".into();
+                let mut other = linked_address.clone();
+                other["source_id"] = json!("another-account");
+                overwritten.reply_channel = Some(address(other));
+            } else {
+                overwritten.thread_key = "another-thread".into();
+            }
+            if overwrite_thread_record {
+                let thread = state.threads.get_mut("linked-thread").unwrap();
+                thread.source_id = overwritten.source_id.clone();
+                thread.thread_key = overwritten.thread_key.clone();
+            }
+            state
+                .triggers
+                .insert("linked-input".into(), overwritten.clone());
+            overwritten.id = "forbidden-addressless".into();
+            overwritten.text = "forbidden-addressless".into();
+            overwritten.reply_channel = None;
+            state.triggers.insert(overwritten.id.clone(), overwritten);
+            outbox(
+                &mut state,
+                "allowed-explicit-answer",
+                address(linked_address),
+            );
+            let result = history(&ticket, &state);
+            assert!(
+                !result.contains("forbidden"),
+                "{changed_field} / overwritten thread {overwrite_thread_record}: {result}"
+            );
+            assert!(result.contains("allowed-explicit-answer"), "{result}");
+        }
+    }
+}
+
+#[test]
 fn invalid_or_missing_identities_never_match_globally() {
     for value in addresses() {
         for field in [
