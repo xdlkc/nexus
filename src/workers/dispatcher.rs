@@ -159,7 +159,7 @@ pub fn build_worker_prompt_with_memory(
             if unread_trigger_ids.contains(tr.id.as_str()) {
                 continue;
             }
-            if scope.contains_trigger(tr, state) && !tr.text.trim().is_empty() {
+            if scope.contains_trigger(tr) && !tr.text.trim().is_empty() {
                 timeline.push((
                     tr.at.clone(),
                     format!(
@@ -175,7 +175,7 @@ pub fn build_worker_prompt_with_memory(
             if msg.status != OutboxStatus::Sent {
                 continue;
             }
-            if scope.contains_address(&msg.channel, state) && !msg.body.trim().is_empty() {
+            if scope.contains_address(&msg.channel) && !msg.body.trim().is_empty() {
                 timeline.push((
                     msg.created_at.clone(),
                     format!(
