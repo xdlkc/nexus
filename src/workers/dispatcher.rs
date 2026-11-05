@@ -1,7 +1,8 @@
 //! Priority-aware Worker concurrency slots (`WorkerSlots`) and Worker prompt builder.
 
+use super::history::HistoryScope;
 use crate::core::engine::EngineState;
-use crate::core::model::{Assignment, ChannelAddress, OutboxStatus, Ticket, TicketInputKind};
+use crate::core::model::{Assignment, OutboxStatus, Ticket, TicketInputKind};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -140,10 +141,7 @@ pub fn build_worker_prompt_with_memory(
     }
 
     if let Some(state) = engine_state {
-        let target_chat_id = ticket.channels.iter().find_map(|ch| match ch {
-            ChannelAddress::FeishuTopic { chat_id, .. } => Some(chat_id.as_str()),
-            _ => None,
-        });
+        let scope = HistoryScope::new(ticket, state);
 
         let unread_trigger_ids: BTreeSet<&str> = ticket
             .inputs
@@ -161,11 +159,7 @@ pub fn build_worker_prompt_with_memory(
             if unread_trigger_ids.contains(tr.id.as_str()) {
                 continue;
             }
-            let same_chat = match (&tr.reply_channel, target_chat_id) {
-                (Some(ChannelAddress::FeishuTopic { chat_id, .. }), Some(cid)) => chat_id == cid,
-                _ => tr.source_id == ticket.mandate.source_id,
-            };
-            if same_chat && !tr.text.trim().is_empty() {
+            if scope.contains_trigger(tr, state) && !tr.text.trim().is_empty() {
                 timeline.push((
                     tr.at.clone(),
                     format!(
@@ -181,21 +175,23 @@ pub fn build_worker_prompt_with_memory(
             if msg.status != OutboxStatus::Sent {
                 continue;
             }
-            let same_chat = match (&msg.channel, target_chat_id) {
-                (ChannelAddress::FeishuTopic { chat_id, .. }, Some(cid)) => chat_id == cid,
-                _ => true,
-            };
-            if same_chat && !msg.body.trim().is_empty() {
+            if scope.contains_address(&msg.channel, state) && !msg.body.trim().is_empty() {
                 timeline.push((
                     msg.created_at.clone(),
-                    format!("- **[Assistant (奈克斯)]**: {}", msg.body.replace('\n', " ")),
+                    format!(
+                        "- **[Assistant (奈克斯)]**: {}",
+                        msg.body.replace('\n', " ")
+                    ),
                 ));
             }
         }
 
         timeline.sort_by(|a, b| a.0.cmp(&b.0));
         let start = timeline.len().saturating_sub(16);
-        let recent_lines: Vec<String> = timeline[start..].iter().map(|(_, line)| line.clone()).collect();
+        let recent_lines: Vec<String> = timeline[start..]
+            .iter()
+            .map(|(_, line)| line.clone())
+            .collect();
         if !recent_lines.is_empty() {
             sections.push(format!(
                 "## Recent Conversation History in This Chat\n{}",
