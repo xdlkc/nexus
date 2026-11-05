@@ -162,6 +162,16 @@ impl HistoryScope {
             {
                 let is_origin = trigger_id == &ticket.origin_trigger_id
                     || thread_key == &ticket.origin_thread_key;
+                // Context fan-out does not add a reply channel. Its explicit
+                // Thread binding supplies the configured source instead.
+                let context_thread = state.threads.get(thread_key).filter(|thread| {
+                    thread.thread_key == *thread_key
+                        && (ticket.context_subscriptions.contains(thread_key)
+                            || ticket
+                                .follows
+                                .iter()
+                                .any(|follow| follow.thread_key == *thread_key))
+                });
                 let valid = state.triggers.get(trigger_id).filter(|tr| {
                     tr.thread_key == *thread_key
                         && if is_origin {
@@ -173,7 +183,14 @@ impl HistoryScope {
                                 .is_some_and(|identity| {
                                     identity.source == tr.source_id
                                         && identity.kind == tr.source_kind
-                                        && conversations.contains(&identity)
+                                        && (conversations.contains(&identity)
+                                            || (!conversations.iter().any(|known| {
+                                                known.kind == identity.kind
+                                                    && known.path == identity.path
+                                            }) && context_thread.is_some_and(|thread| {
+                                                thread.source_id == tr.source_id
+                                                    && thread.source_kind == tr.source_kind
+                                            })))
                                 })
                         }
                 });

@@ -291,6 +291,18 @@ fn explicit_context_and_followed_threads_include_only_their_configured_source() 
         } else {
             ticket.context_subscriptions.insert("linked-thread".into());
         }
+        ticket.inputs.push(TicketInput {
+            id: "context-input".into(),
+            kind: TicketInputKind::TriggerFanOut {
+                trigger_id: "linked-user".into(),
+                thread_key: "linked-thread".into(),
+                text_preview: "linked-user".into(),
+            },
+            from_person: true,
+            read_by_worker: true,
+            handed_back_reason: None,
+            at: "2026-11-05T00:00:00Z".into(),
+        });
         outbox(&mut state, "linked-answer", address(channel.clone()));
         channel["source_id"] = json!("another-mail-account");
         let other = trigger(
@@ -304,6 +316,16 @@ fn explicit_context_and_followed_threads_include_only_their_configured_source() 
         assert!(result.contains("linked-user"), "{result}");
         assert!(result.contains("linked-answer"), "{result}");
         assert!(!result.contains("forbidden"), "{result}");
+        // Reusing the input ID from another account must still fail closed.
+        let overwritten = state.triggers.get_mut("linked-user").unwrap();
+        overwritten.source_id = "another-mail-account".into();
+        let ChannelAddress::GwsGmailDraft { source_id, .. } =
+            overwritten.reply_channel.as_mut().unwrap()
+        else {
+            unreachable!()
+        };
+        *source_id = "another-mail-account".into();
+        assert!(!history(&ticket, &state).contains("forbidden"));
     }
 }
 
@@ -397,7 +419,13 @@ fn overwritten_non_origin_input_cannot_override_explicit_channel_bindings() {
             engine
                 .attach_trigger_to_ticket("linked-input", &ticket.id, "2026-11-05T00:00:01Z")
                 .unwrap();
-            let ticket = engine.state.tickets[&ticket.id].clone();
+            let mut ticket = engine.state.tickets[&ticket.id].clone();
+            // An explicit follow must not override an existing channel's source.
+            ticket.follows.push(FollowedThread {
+                thread_key: "linked-thread".into(),
+                own: false,
+                closed: None,
+            });
             let mut state = engine.state;
             let mut overwritten = state.triggers["linked-input"].clone();
             if changed_field == "source" {
