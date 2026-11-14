@@ -85,6 +85,7 @@ fn provisions_executable_worker_shims_and_gitconfig() {
         lark_profile: Some("bot_prod".to_owned()),
         gws_account: Some("agent@company.com".to_owned()),
         nexus_bin_path: None,
+        use_host_gh: false,
     })
     .unwrap();
 

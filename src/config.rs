@@ -29,6 +29,12 @@ pub struct AgentIdentityConfig {
     /// so Nexus never touches the host user's `~/.config/gh`.
     #[serde(default)]
     pub isolate_gh_config: bool,
+    /// When `true`, Workers deliberately reuse the **host user's** `gh` login
+    /// (`~/.config/gh`) instead of the isolated Agent account. Takes precedence
+    /// over `isolate_gh_config` / `github_agent_token`. Useful when the Agent
+    /// account has only read access to the target repositories.
+    #[serde(default)]
+    pub use_host_gh: bool,
     /// Optional dedicated Google Workspace (`gws`) account email/profile for `gws-agent`.
     #[serde(default)]
     pub gws_account: Option<String>,
@@ -44,6 +50,7 @@ impl Default for AgentIdentityConfig {
             git_user_email: "nexus-agent@users.noreply.github.com".to_owned(),
             github_agent_token: None,
             isolate_gh_config: false,
+            use_host_gh: false,
             gws_account: None,
             dws_profile: None,
         }

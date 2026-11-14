@@ -14,6 +14,9 @@ pub struct ShimConfig {
     pub lark_profile: Option<String>,
     pub gws_account: Option<String>,
     pub nexus_bin_path: Option<PathBuf>,
+    /// When `true`, `gh-agent` deliberately inherits the host user's `gh` login
+    /// (`~/.config/gh`) instead of an injected token / isolated config dir.
+    pub use_host_gh: bool,
 }
 
 /// Generated paths inside `<state_dir>`.
@@ -38,13 +41,15 @@ pub fn provision_worker_shims(cfg: &ShimConfig) -> anyhow::Result<ProvisionedShi
 
     let gh_agent_path = worker_bin_dir.join("gh-agent");
     let mut gh_env_lines = vec![CLEAN_PATH_EXPORT.to_owned()];
-    if let Some(tok) = &cfg.github_token
-        && !tok.trim().is_empty()
-    {
-        gh_env_lines.push(format!("export GH_TOKEN='{}'", tok.replace('\'', "'\\''")));
-    }
-    if let Some(dir) = &cfg.github_config_dir {
-        gh_env_lines.push(format!("export GH_CONFIG_DIR='{}'", dir.display()));
+    if !cfg.use_host_gh {
+        if let Some(tok) = &cfg.github_token
+            && !tok.trim().is_empty()
+        {
+            gh_env_lines.push(format!("export GH_TOKEN='{}'", tok.replace('\'', "'\\''")));
+        }
+        if let Some(dir) = &cfg.github_config_dir {
+            gh_env_lines.push(format!("export GH_CONFIG_DIR='{}'", dir.display()));
+        }
     }
     let gh_script = format!(
         "#!/usr/bin/env zsh\nset -e\n{}\nexec gh \"$@\"\n",
@@ -154,9 +159,13 @@ pub fn provision_agent_workspace_from_config(cfg: &NexusConfig) -> anyhow::Resul
             .filter(|s| !s.trim().is_empty())
     });
 
-    let use_isolated_gh = cfg.agent_identity.isolate_gh_config
-        || configured_gh_token.is_some()
-        || gh_home.join("hosts.yml").exists();
+    let use_isolated_gh = if cfg.agent_identity.use_host_gh {
+        false
+    } else {
+        cfg.agent_identity.isolate_gh_config
+            || configured_gh_token.is_some()
+            || gh_home.join("hosts.yml").exists()
+    };
     let github_config_dir = if use_isolated_gh {
         Some(gh_home.clone())
     } else {
@@ -165,11 +174,16 @@ pub fn provision_agent_workspace_from_config(cfg: &NexusConfig) -> anyhow::Resul
 
     let shims = provision_worker_shims(&ShimConfig {
         state_dir: abs_state_dir.clone(),
-        github_token,
+        github_token: if cfg.agent_identity.use_host_gh {
+            None
+        } else {
+            github_token
+        },
         github_config_dir,
         lark_profile: cfg.feishu.profile.clone(),
         gws_account: cfg.agent_identity.gws_account.clone(),
         nexus_bin_path: std::env::current_exe().ok(),
+        use_host_gh: cfg.agent_identity.use_host_gh,
     })?;
 
     // Enhance gws-agent / gws and dws-agent / dws with isolated config dirs
