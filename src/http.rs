@@ -92,6 +92,10 @@ pub struct MemoryPayload {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SimulateChatPayload {
     pub text: String,
+    #[serde(default)]
+    pub thread_key: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -593,8 +597,8 @@ async fn handle_identity_status(State(app): State<SharedAppState>) -> Json<serde
         .as_ref()
         .is_some_and(|s| !s.trim().is_empty());
     let has_isolated_gh_hosts = gh_home.join("hosts.yml").exists();
-    let gh_is_isolated =
-        cfg.agent_identity.isolate_gh_config || has_dedicated_gh_token || has_isolated_gh_hosts;
+    let gh_is_isolated = !cfg.agent_identity.use_host_gh
+        && (cfg.agent_identity.isolate_gh_config || has_dedicated_gh_token || has_isolated_gh_hosts);
 
     Json(serde_json::json!({
         "ok": true,
@@ -816,12 +820,23 @@ async fn handle_simulate_chat(
         None
     };
 
+    let thread_key = payload
+        .thread_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| match payload.repo.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(repo) => format!("web:repo:{repo}:{msg_id}"),
+            None => format!("admin:chat:{chat_id}:{msg_id}"),
+        });
+
     let trigger = Trigger {
         id: format!("admin-trig-{ts_ms}"),
         source_id,
         source_kind: SourceKindId::Feishu,
         external_id: msg_id.clone(),
-        thread_key: format!("admin:chat:{chat_id}:{msg_id}"),
+        thread_key,
         actor_id: actor_id.clone(),
         actor_is_bot: false,
         addressed_agent: true,

@@ -478,7 +478,7 @@ pub fn pi_native_tool_specs() -> Vec<LlmToolSpec> {
         },
         LlmToolSpec {
             name: "run_command".to_owned(),
-            description: "Execute a shell command in the worktree (`gh-agent`, `lark-bot`, `cargo`, `git`, etc.). Automatically backgrounds after 5 seconds if still running.".to_owned(),
+            description: "Execute a shell command strictly inside the current worktree (`gh-agent`, `lark-bot`, `cargo`, `git`, etc.). Never scan host directories outside the worktree (such as `~` or `~/Documents`). Automatically backgrounds after 5 seconds if still running.".to_owned(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": { "command": { "type": "string" } },
@@ -543,10 +543,12 @@ pub async fn run_pi_native_worker<L: LlmClient>(
         LlmMessage::system(format!(
             "You are a Nexus `pi-native` autonomous engineering worker.\n\
              Active Runtime Engine: harness=`pi-native` (built-in Rust ReAct loop inside the `nexus` daemon process), provider=`{}`, model=`{}`, think_effort=`{}`.\n\
+             Strict Workspace Boundary: All file operations, searches, and shell commands MUST stay strictly inside the current worktree (`{}`). NEVER access or scan host directories outside the worktree (such as `~`, `$HOME`, `~/Documents`, `~/Desktop`, `~/Downloads`, or `~/.dsh`). If an external tool or project mentioned in the task is not found in the current repository, do NOT search the host disk—immediately call `worker_report` with `status=\"waiting\"` and `question` to ask the user for clarification.\n\
              Inspect files, make minimal accurate edits, verify with tests, and finish promptly by calling `worker_report` with a concise Chinese summary (<= 85 characters).",
             ctx.target.provider,
             ctx.target.model,
-            current_effort.as_str()
+            current_effort.as_str(),
+            ctx.worktree_dir.display()
         )),
         LlmMessage::user(ctx.prompt.clone()),
     ];

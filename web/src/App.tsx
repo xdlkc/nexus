@@ -50,10 +50,20 @@ import type {
 import { StepTimelineItem } from './components/StepBadge';
 import { IdentityMatrix } from './components/IdentityMatrix';
 import { SearchableSelect } from './components/SearchableSelect';
+import { SlackWorkspace } from './components/SlackWorkspace';
 
+type ViewMode = 'workspace' | 'admin';
 type ActiveTab = 'tickets' | 'trajectory' | 'conversation' | 'decisions' | 'memory' | 'settings' | 'toolchain';
 
+function isTicketOpen(t: Ticket): boolean {
+  if (t.status === 'closed') return false;
+  return t.ended == null;
+}
+
 export default function App() {
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    typeof window !== 'undefined' && window.location.hash === '#admin' ? 'admin' : 'workspace'
+  );
   const [activeTab, setActiveTab] = useState<ActiveTab>('tickets');
   const [overview, setOverview] = useState<NexusOverview | null>(null);
   const [identityStatus, setIdentityStatus] = useState<IdentityStatusResponse | null>(null);
@@ -204,6 +214,25 @@ export default function App() {
   };
 
   useEffect(() => {
+    const syncHash = () => {
+      setViewMode(window.location.hash === '#admin' ? 'admin' : 'workspace');
+    };
+    window.addEventListener('hashchange', syncHash);
+    return () => window.removeEventListener('hashchange', syncHash);
+  }, []);
+
+  const switchViewMode = (mode: ViewMode, adminTab?: ActiveTab) => {
+    setViewMode(mode);
+    if (adminTab) setActiveTab(adminTab);
+    if (typeof window !== 'undefined') {
+      const targetHash = mode === 'admin' ? '#admin' : '#workspace';
+      if (window.location.hash !== targetHash) {
+        window.history.replaceState(null, '', targetHash);
+      }
+    }
+  };
+
+  useEffect(() => {
     loadOverview();
     loadIdentity();
     getWorkerModels()
@@ -349,7 +378,43 @@ export default function App() {
   const acceptMode: AcceptMode =
     overview?.state?.accept_mode || overview?.config?.accept_mode || 'auto';
 
-  const openTicketCount = tickets.filter((t) => t.status === 'open').length;
+  const openTicketCount = tickets.filter(isTicketOpen).length;
+
+  const repoFilterOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of overview?.config?.github?.repos || []) {
+      if (r.trim()) set.add(r.trim());
+    }
+    if (overview?.config?.default_repo) {
+      set.add(overview.config.default_repo);
+    }
+    for (const t of tickets) {
+      if (t.repo && t.repo.trim()) set.add(t.repo.trim());
+    }
+    return ['all', ...Array.from(set)];
+  }, [overview, tickets]);
+
+  const openSwitchModal = (t: Ticket) => {
+    const lastAsg = t.assignments?.[t.assignments.length - 1];
+    const target = lastAsg?.target || {
+      harness: 'codex' as HarnessKind,
+      provider: 'openai',
+      model: 'gpt-6-astra',
+      think_effort: 'medium' as ThinkEffort,
+    };
+    setSwitchModalTicket(t);
+    setSwitchHarness(target.harness as HarnessKind);
+    setSwitchProvider(target.provider);
+    setSwitchModel(target.model);
+    setSwitchThink(target.think_effort as ThinkEffort);
+  };
+
+  const handleStopTicket = async (ticketId: string) => {
+    await stopTicket(ticketId);
+    notify(`已终止工单 ${ticketId}`);
+    await loadOverview();
+  };
+
   const decisionList = useMemo(() => {
     if (!overview?.state?.decisions) return [];
     return Object.values(overview.state.decisions).reverse();
@@ -393,25 +458,90 @@ export default function App() {
   }, [overview]);
 
   return (
-    <div className="min-h-screen flex bg-[#07090e] text-slate-100">
-      {/* LEFT SIDEBAR */}
-      <aside className="w-64 shrink-0 border-r border-slate-800/80 bg-[#0a0d14]/95 backdrop-blur-xl flex flex-col justify-between p-4 sticky top-0 h-screen">
-        <div>
-          {/* Brand Header */}
-          <div className="flex items-center gap-3 px-2 py-2.5 mb-5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-              <Zap className="w-5 h-5 text-white" />
+    <div className="min-h-screen flex flex-col bg-[#07090e] text-slate-100">
+      {/* GLOBAL TOP MODE SWITCHER BAR */}
+      <div className="sticky top-0 z-50 h-11 shrink-0 border-b border-slate-800/90 bg-[#06080d]/95 backdrop-blur-md px-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500 via-violet-500 to-cyan-400 flex items-center justify-center shadow-sm shadow-indigo-500/20">
+              <Zap className="w-3.5 h-3.5 text-white" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold tracking-tight text-sm text-white">NEXUS</span>
-                <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
-                  TS v0.2
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400">Super-Agent Control Plane</p>
-            </div>
+            <span className="font-bold tracking-tight text-xs text-white hidden sm:inline">
+              NEXUS
+            </span>
           </div>
+
+          <div className="inline-flex items-center rounded-lg bg-[#0d111b] p-0.5 border border-slate-800 text-xs">
+            <button
+              type="button"
+              onClick={() => switchViewMode('workspace')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-md font-medium transition cursor-pointer ${
+                viewMode === 'workspace'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>协同工作台</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => switchViewMode('admin')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-md font-medium transition cursor-pointer ${
+                viewMode === 'admin'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              <span>控制面后台</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 text-[11px] text-slate-400">
+          <span className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-900 border border-slate-800">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            活跃工单 <strong className="text-slate-200 font-mono">{openTicketCount}</strong> / {tickets.length}
+          </span>
+          <span className="hidden sm:inline-flex items-center gap-1 font-mono text-[11px] text-indigo-300">
+            @{overview?.config?.github?.bot_login || 'lkc12138-cloud'}
+          </span>
+        </div>
+      </div>
+
+      {viewMode === 'workspace' ? (
+        <SlackWorkspace
+          overview={overview}
+          harnessCatalogs={harnessCatalogs}
+          onRefresh={loadOverview}
+          onOpenSwitchModal={openSwitchModal}
+          onStopTicket={handleStopTicket}
+          onSwitchToAdmin={(tab) => switchViewMode('admin', (tab as ActiveTab) || 'tickets')}
+          onNotify={notify}
+          autoRefresh={autoRefresh}
+          onToggleAutoRefresh={setAutoRefresh}
+        />
+      ) : (
+        <div className="flex-1 flex min-w-0">
+          {/* LEFT SIDEBAR */}
+          <aside className="w-64 shrink-0 border-r border-slate-800/80 bg-[#0a0d14]/95 backdrop-blur-xl flex flex-col justify-between p-4 sticky top-11 h-[calc(100vh-44px)]">
+            <div>
+              {/* Brand Header */}
+              <div className="flex items-center gap-3 px-2 py-2.5 mb-5">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                  <Zap className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold tracking-tight text-sm text-white">NEXUS</span>
+                    <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                      TS v0.2
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Super-Agent Control Plane</p>
+                </div>
+              </div>
 
           {/* Navigation */}
           <nav className="space-y-1">
@@ -512,7 +642,7 @@ export default function App() {
       {/* MAIN WORKSPACE */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* TOP COMMAND HEADER */}
-        <header className="sticky top-0 z-20 border-b border-slate-800/80 bg-[#07090e]/85 backdrop-blur-xl px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+        <header className="sticky top-11 z-20 border-b border-slate-800/80 bg-[#07090e]/85 backdrop-blur-xl px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
           <form onSubmit={handleQuickDispatch} className="flex-1 min-w-[320px] max-w-2xl flex items-center gap-2">
             <div className="relative flex-1">
               <Sparkles className="w-4 h-4 text-indigo-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -609,9 +739,9 @@ export default function App() {
                     />
                   </div>
 
-                  <div className="flex items-center gap-1.5 bg-[#070a10] p-1 rounded-xl border border-slate-800">
+                  <div className="flex items-center gap-1.5 bg-[#070a10] p-1 rounded-xl border border-slate-800 flex-wrap">
                     <Filter className="w-3.5 h-3.5 text-slate-500 ml-2" />
-                    {['all', 'xdlkc/nexus', 'xdlkc/clipboard-history'].map((r) => (
+                    {repoFilterOptions.map((r) => (
                       <button
                         key={r}
                         type="button"
@@ -713,13 +843,17 @@ export default function App() {
                             </td>
 
                             <td className="py-3.5 px-4 align-top whitespace-nowrap">
-                              {t.status === 'closed' ? (
+                              {!isTicketOpen(t) ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
-                                  已关闭 ({t.resolution || 'completed'})
+                                  已关闭 ({t.ended?.outcome || t.resolution || 'completed'})
                                 </span>
                               ) : report?.status === 'ready' ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                                   <CheckCircle2 className="w-3 h-3" /> 已就绪 (Ready)
+                                </span>
+                              ) : report?.question ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/35">
+                                  等待拍板
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
@@ -757,28 +891,18 @@ export default function App() {
                                   <Terminal className="w-3.5 h-3.5" />
                                   内部轨迹
                                 </button>
-                                {t.status === 'open' && (
+                                {isTicketOpen(t) && (
                                   <>
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        setSwitchModalTicket(t);
-                                        setSwitchHarness(target.harness as HarnessKind);
-                                        setSwitchProvider(target.provider);
-                                        setSwitchModel(target.model);
-                                        setSwitchThink(target.think_effort as ThinkEffort);
-                                      }}
+                                      onClick={() => openSwitchModal(t)}
                                       className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs transition cursor-pointer"
                                     >
                                       热切换
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={async () => {
-                                        await stopTicket(t.id);
-                                        notify(`已终止工单 ${t.id}`);
-                                        loadOverview();
-                                      }}
+                                      onClick={() => handleStopTicket(t.id)}
                                       className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/25 text-xs transition cursor-pointer"
                                       title="终止工单"
                                     >
@@ -820,7 +944,7 @@ export default function App() {
                       options={tickets.map((t) => ({
                         value: t.id,
                         label: `${t.id} · [${t.repo || 'nexus'}] ${t.title.slice(0, 48)}`,
-                        badge: t.status,
+                        badge: isTicketOpen(t) ? 'open' : 'closed',
                       }))}
                       searchPlaceholder="搜索工单号、仓库或标题..."
                       allowCustom={false}
@@ -1433,7 +1557,9 @@ export default function App() {
             </div>
           )}
         </main>
-      </div>
+        </div>
+        </div>
+      )}
 
       {/* SLIDE-OVER TRAJECTORY DRAWER */}
       {drawerTicketId && (

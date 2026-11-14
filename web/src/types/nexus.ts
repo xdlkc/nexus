@@ -22,9 +22,10 @@ export interface WorkerReport {
 
 export interface Assignment {
   id: string;
+  ticket_id?: string;
   target: ExecutionTarget;
   worktree_dir: string;
-  status: 'running' | 'ended';
+  status: 'pending' | 'running' | 'ended';
   started_at: string;
   ended_at?: string | null;
   end_reason?: string | null;
@@ -37,19 +38,65 @@ export interface FollowedThread {
   closed?: string | null;
 }
 
+export interface TicketEnd {
+  outcome: string;
+  by_person_stop: boolean;
+  reason: string;
+  at: string;
+}
+
+export interface TicketInputKind {
+  type: string;
+  trigger_id?: string;
+  thread_key?: string;
+  text_preview?: string;
+  text?: string;
+  previous_assignment_id?: string;
+  previous_target?: ExecutionTarget;
+  previous_summary?: string;
+  git_status_diff?: string;
+}
+
+export interface TicketInput {
+  id: string;
+  kind: TicketInputKind;
+  from_person: boolean;
+  read_by_worker: boolean;
+  handed_back_reason?: string | null;
+  at: string;
+}
+
+export interface Thread {
+  thread_key: string;
+  source_id: string;
+  source_kind: string;
+  label: string;
+  trigger_ids: string[];
+  subscribed_tickets: string[];
+  context_only_tickets: string[];
+  queued_trigger_ids: string[];
+  decision_ids: string[];
+  closed_outcome?: { outcome: string; at: string } | null;
+}
+
 export interface Ticket {
   id: string;
   short_name: string;
   title: string;
   repo?: string | null;
-  status: 'open' | 'closed';
+  origin_trigger_id?: string;
+  origin_thread_key?: string;
+  status?: 'open' | 'closed';
   resolution?: string | null;
   phase?: TicketPhase | null;
+  ended?: TicketEnd | null;
+  inputs?: TicketInput[];
   subscriptions: string[];
   follows: FollowedThread[];
   assignments: Assignment[];
+  delivery_error?: string | null;
   created_at: string;
-  updated_at: string;
+  updated_at?: string;
 }
 
 export interface Trigger {
@@ -62,14 +109,30 @@ export interface Trigger {
   actor_is_bot: boolean;
   addressed_agent: boolean;
   text: string;
+  reply_to_trigger_id?: string | null;
+  inline_target?: Partial<ExecutionTarget> | null;
+  reply_channel?: {
+    kind: string;
+    source_id?: string;
+    source_kind?: string;
+    repo?: string;
+    number?: number;
+    pull_number?: number;
+    chat_id?: string;
+    conversation_id?: string;
+    thread_id?: string | null;
+    [key: string]: unknown;
+  } | null;
   at: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface OutboxMessage {
   id: string;
   ticket_id?: string | null;
+  purpose?: 'acknowledgement' | 'answer' | 'result' | 'attention' | 'pull_end_notice' | string;
   body: string;
-  status: 'pending' | 'sent' | 'failed';
+  status: 'pending' | 'sent' | 'failed' | 'dropped';
   attempts: number;
   last_error?: string | null;
   created_at: string;
@@ -167,6 +230,7 @@ export interface NexusOverview {
   state: {
     accept_mode?: AcceptMode | null;
     triggers: Record<string, Trigger>;
+    threads?: Record<string, Thread>;
     tickets: Record<string, Ticket>;
     decisions: Record<string, DecisionRecord>;
     outbox: Record<string, OutboxMessage>;

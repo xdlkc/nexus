@@ -296,7 +296,7 @@ pub fn build_worker_prompt_with_memory(
 
     let memory_instruction = match abs_memory_path {
         Some(p) => format!(
-            "\n7. Maintain conversational continuity using `Recent Conversation History in This Chat` and `Persistent Long-Term Memory` above. When the user tells you personal details, preferences, long-term project rules, or when you reach agreed conclusions, decisions, or ideas during discussions, proactively save or append them to `{}`.",
+            "\n9. Maintain conversational continuity using `Recent Conversation History in This Chat` and `Persistent Long-Term Memory` above. When the user tells you personal details, preferences, long-term project rules, or when you reach agreed conclusions, decisions, or ideas during discussions, proactively save or append them to `{}`.",
             p.display()
         ),
         None => String::new(),
@@ -321,11 +321,16 @@ pub fn build_worker_prompt_with_memory(
             - Commit your changes (`git add -A && git commit -m \"...\"`), push the branch (`git push -u origin HEAD`), and open a Pull Request via `gh-agent pr create --repo {} --head agent/{} --base main --title \"...\" --body \"Closes #<issue_number>\\n\\n...\"`.\n\
             - Always include the full PR URL (`https://github.com/.../pull/N`) in your final summary.\n\
          6. Your final response text is automatically captured and delivered to the user channel, or you may explicitly call `nexus worker report --status <ready|waiting|blocked|failed> --summary \"...\" [--pr-thread github:pr:owner/repo#N --pr-url https://...]` (or `worker_report`).\n\
-         7. Keep any IM-facing summary or reply concise (strictly <= 90 words / characters).{}",
+         7. Keep any IM-facing summary or reply concise (strictly <= 90 words / characters).\n\
+         8. **Strict Workspace Boundary (No Host Disk Probing)**:\n\
+            - All file reads, writes, searches (`grep`, `find`, `ls`, `cat`, `rg`), and shell commands MUST stay strictly within your assigned worktree directory (`{}`) and repository (plus the persistent memory file path above if specified).\n\
+            - NEVER access, list, or scan host personal directories outside the workspace (`~`, `$HOME`, `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Library`, `/Users`, `/Applications`, or dotfiles like `~/.dsh`), as doing so triggers macOS TCC / iCloud Drive privacy popups and violates workspace isolation.\n\
+            - If a task mentions an unfamiliar tool, CLI, or external project not present in the current repository, do NOT search the host disk for it—immediately call `nexus worker report --status waiting --summary \"...\"` (or `worker_report` with `status=\"waiting\"` and `question=\"...\"`) to ask the user for clarification or specification.{}",
         ticket.repo.as_deref().unwrap_or("xdlkc/nexus"),
         ticket.short_name,
         ticket.repo.as_deref().unwrap_or("xdlkc/nexus"),
         ticket.short_name,
+        assignment.worktree_dir,
         memory_instruction
     ));
 
