@@ -1,157 +1,164 @@
 # Nexus
 
-**事件驱动、双核路由的自主 Super-Agent 系统底座（Control Plane & Multi-Harness Runtime）**
+English | [简体中文](./README.zh-CN.md)
 
-Nexus 是一个持续在线、跨渠道协同的 Super-Agent 运行时系统。它将即时通讯（飞书、钉钉、Telegram、Slack、微信）、代码托管平台（GitHub 多仓库 Issues / PRs / Reviews / CI）与办公套件（Google Workspace）接入统一的事件流，在后台通过**独立隔离的 Agent 身份与工作空间**并发调度多种 Coding Harness（`codex`、`claude-code`、`pi-native`、`pi-rpc`、`opencode`）完成研发与日常任务，让人的角色从繁琐的“单会话盯梢与上下文搬运”上移到更高层的 **“决策与验收”**。
+**An event-driven, dual-engine Super-Agent control plane and polymorphic worker runtime in Rust.**
 
----
-
-## 核心思想
-
-主流 Agent 工具默认将“任务”绑定在彼此隔离的单次对话窗口（`Session`）中：单任务的上限取决于模型能力，而多任务并发的上限却受制于人的注意力。Nexus 旨在打破这一限制，将 `Session` 退化为系统底层的实现细节：
-
-- **最小化注意力消耗**：系统的每一条通知、每一次提问都在消耗人的注意力。Nexus 仅在结果就绪（`Ready`）、需要关键决策（`Blocked`）或任务异常时主动发声，其余时间在后台静默推进。
-- **跨信道全局连续**：无论你在飞书群里讨论方案、在 GitHub Issue/PR 下提需求或做 Code Review，面对的始终是同一个拥有全局连续记忆（`.nexus/MEMORY.md`）的 Agent（奈克斯）。
-- **宿主机与 Agent 身份完全隔离**：Nexus 拥有独立的凭证沙箱（`.nexus/agent-home/`）与 CLI 垫片层（`.nexus/worker-bin/`），其 Git 提交身份、GitHub 账号（如 `@lkc12138-cloud`）、飞书 Profile 与宿主机开发者的个人账号彻底解耦。
-- **确定性守门 + 判别式分诊 + 生成式编排**：融合经典计算机系统的分层思想，用确定性规则与轻量判别模型（Tier-1 `Jev`）过滤环境噪音，只把跨任务协调交给生成式大模型（Tier-2 `Router`）。
-- **工单与执行器解耦**：工作单元（`Ticket`）与具体执行器分离，支持按任务特性自由组合并在运行中途热切换底层的 **`Harness × Provider × Model × Think Effort`**。
+Nexus unifies messaging channels (Feishu, DingTalk, Telegram, Slack, WeChat), code collaboration (GitHub Issues, PRs, Reviews, CI), and workspace suites (Google Workspace) into a single event stream. A resident dual-engine router coordinates isolated background workers across multiple coding harnesses (`codex`, `claude-code`, `pi-native`, `pi-rpc`, `opencode`), shifting human involvement from monitoring individual sessions to making decisions and reviewing deliverables.
 
 ---
 
-## 系统架构
+## Core Design Principles
 
-Nexus 采用 **双层解耦架构（常驻 Router 控制面 + 隔离 Worker 执行面）**，配合事件总线、SQLite 持久化状态存储、全链路轨迹追踪与外部自愈回路运行：
+- **Minimize attention overhead**: Nexus stays quiet while workers progress in the background and surfaces notifications only when deliverables are ready (`Ready`), decisions are needed (`Blocked` / `Waiting`), or failures occur.
+- **Cross-channel continuity**: Conversations across Feishu group topics, DingTalk chats, GitHub Issue/PR threads, and the Web workspace share persistent long-term memory (`.nexus/MEMORY.md`), while worker history injection (`src/workers/history.rs`) strictly isolates thread context by `(source, kind, conversation path)`.
+- **Host vs. agent identity isolation**: Nexus runs workers inside an isolated credential sandbox (`.nexus/agent-home/` and `.nexus/worker-bin/`) with dedicated Git authorship (`.nexus/worker-gitconfig`) and scrubbed subprocess environments (`*_SECRET*`, `*_TOKEN*`, `*_KEY*`, `*_PASSWORD*`). An explicit `use_host_gh` option allows reusing host `gh` credentials when an agent account only has read access.
+- **Strict worker workspace boundary**: Worker prompts prohibit probing or scanning host personal directories outside the assigned `git worktree` and `.nexus/MEMORY.md`, preventing macOS TCC / iCloud Drive popups and cross-repo leakage.
+- **Tiered filtering and orchestration**: Deterministic admission rules (`Gate`) and a discriminative triage classifier (`Jev`) filter noise and prompt-injection payloads before escalating cross-task coordination to the generative `Router`.
+- **Decoupled tickets and execution targets**: Each `Ticket` owns its worktree and history independently of any single session and can hot-switch `Harness x Provider x Model x ThinkEffort` mid-flight via `HandoffCard`.
+
+---
+
+## Architecture
 
 ```mermaid
 flowchart TD
-  subgraph Peripherals["周边工作环境 - Sources and Channels"]
-    IM["即时通讯: 飞书 / 钉钉 / Telegram / Slack / 微信"]
-    GH["代码协作: GitHub Issues / PRs / Reviews / CI"]
-    GWS["办公套件: Google Workspace Gmail / Calendar / Drive / Docs"]
+  subgraph Peripherals["Sources and Channels"]
+    IM["IM Channels: Feishu / DingTalk / Slack / Telegram / WeChat"]
+    GH["Code Collaboration: GitHub Issues / PRs / Reviews / CI"]
+    GWS["Workspace Suite: Google Workspace Gmail / Calendar / Drive"]
+    WEB["Web Workspace: Slack-style Console #workspace"]
   end
 
-  subgraph Intake["三级事件过滤与准入 - Event Intake"]
-    Gate["Tier-0 确定性准入: 白名单 / 唤醒词 / 幂等去重"]
-    FanOut["Thread 订阅直通: 已绑定话题直接投递对应工单"]
-    Triage["Tier-1 判别式分诊 Jev: 防注入检测 / 主动规则匹配 / 复杂度定级"]
+  subgraph Intake["Three-Tier Event Intake"]
+    Gate["Tier-0 Gate: Allowlist / Wake Words / Idempotency"]
+    FanOut["Thread Fan-out: Subscribed Threads Route Directly to Ticket"]
+    Triage["Tier-1 Jev Triage: Injection Firewall / Proactive Rules / Complexity"]
   end
 
-  subgraph Brain["常驻总控层 - Router Control Plane"]
-    Router["Tier-2 全局 Router: 事件批处理 / 链式上下文召回 / 多信道统一回复"]
-    Memory["持久化长期记忆: .nexus/MEMORY.md 自动沉淀里程碑与架构决策"]
+  subgraph Brain["Router Control Plane"]
+    Router["Tier-2 Router: Auto-Batching / Chain of Recall / Channel Formatting"]
+    Memory["Persistent Memory: .nexus/MEMORY.md"]
   end
 
-  subgraph Hands["多态执行与身份隔离层 - Polymorphic Worker Pool"]
-    Dispatcher["工单调度器: 动态匹配与中途热切换 Harness x Provider x Model x ThinkEffort"]
-    Shims["独立身份沙箱: .nexus/agent-home 与 .nexus/worker-bin 隔离垫片"]
-    Workers["Git Worktree 并发池: codex / claude-code / pi-native / pi-rpc / opencode"]
-    Traces["内部执行轨迹: .nexus/traces/*.jsonl 实时记录思考链与工具调用"]
+  subgraph Hands["Polymorphic Worker Pool and Sandbox"]
+    Dispatcher["Dispatcher: Hot-Switch Harness x Provider x Model x ThinkEffort"]
+    Shims["Identity Sandbox: .nexus/agent-home and .nexus/worker-bin"]
+    Workers["Worktree Pool: codex / claude-code / pi-native / pi-rpc / opencode"]
+    Traces["Execution Traces: .nexus/traces/*.jsonl"]
   end
 
-  subgraph Foundation["持久化与自愈回路 - Persistence and Watchdog"]
-    Store[("SQLite 状态库: 工单 / 游标 / 决策审计")]
-    Watchdog["外部 Watchdog: 存活监控 / 语义死循环检测 / 自动升档恢复"]
+  subgraph Foundation["Persistence and Watchdog"]
+    Store[("SQLite WAL Store: .nexus/nexus.db")]
+    Watchdog["Watchdog: Liveness / Semantic Loop Detection / Auto-Escalation"]
   end
 
-  Peripherals -->|"环境事件"| Gate
-  Gate -->|"已订阅话题"| FanOut
-  Gate -->|"候选新事件"| Triage
-  Triage -->|"高置信度直派"| Dispatcher
-  Triage -->|"复杂协调或模糊请求"| Router
-  Router -->|"分派或续跑工单"| Dispatcher
-  Router <-->|"读取与沉淀"| Memory
-  FanOut -->|"上下文直通"| Dispatcher
+  Peripherals -->|"Events"| Gate
+  Gate -->|"Subscribed Thread"| FanOut
+  Gate -->|"Candidate Batch"| Triage
+  Triage -->|"Fast-Accept"| Dispatcher
+  Triage -->|"Escalation"| Router
+  Router -->|"Dispatch or Resume"| Dispatcher
+  Router <-->|"Read and Append"| Memory
+  FanOut -->|"Direct Input"| Dispatcher
   Dispatcher --> Shims
   Shims --> Workers
-  Workers -->|"实时写入步骤"| Traces
-  Workers -->|"结构化汇报或提问"| Router
-  Router -->|"按信道习惯输出"| Peripherals
+  Workers -->|"Stream Steps"| Traces
+  Workers -->|"Report or Question"| Router
+  Router -->|"Channel Reply"| Peripherals
   Router <--> Store
   Dispatcher <--> Store
-  Watchdog -.->|"巡检与自愈"| Dispatcher
+  Watchdog -.->|"Inspect and Escalate"| Dispatcher
 ```
 
-### 关键机制
+### Key Mechanisms
 
-1. **三级事件过滤与双核路由（Dual-Engine Router）**
-   - **Tier-0（确定性快路径）**：通过身份白名单、群唤醒词（如 `奈克斯` / `nexus`）与自身回声过滤（忽略 Bot 自身创建的 Issue/PR 防止自激循环）毫秒级滤除无关噪音；对已绑定工单的话题（`Thread`）直接旁路直通对应 Worker。
-   - **Tier-1（判别式分诊器 `Jev`）**：支持本地零延迟启发式规则与远端 TypeSafe / OpenRouter / OpenAI 协议，对候选事件做防注入检测、任务分类与复杂度定级。
-   - **Tier-2（生成式 `Router`）**：负责跨任务协调、按需多跳召回历史上下文（**Inline & Spill + 链式召回**），并在事件密集涌入时自动合并批处理（**Auto-Batching**）。
+1. **Three-Tier Routing & Context Locality**
+   - **Tier-0 (`Gate`)**: Runs in sub-millisecond Rust code to enforce actor/bot allowlists, wake keywords, self-echo filtering, `(sourceId, externalId)` idempotency, inline target directives (`[harness:provider/model:think]`), and direct **Subscription Fan-out** for active tickets.
+   - **Tier-1 (`Jev`)**: Discriminative classifier evaluating `injection_risk` (`>= 0.80` blocked), parallel proactive rules, route actions (`ignore`, `new_ticket`, `attach_ticket`, `stop_ticket`, `needs_llm_router`), `task_kind`, and `complexity`. Falls back to `HeuristicJevClassifier` when no remote Jev endpoint is configured.
+   - **Tier-2 (`Router`)**: Resident orchestrator using **Inline & Spill** budgeting plus **Chain of Recall** (`trigger/<id>`, `thread/<key>`, `ticket/<id>`, `ticket/<id>/report/<assignmentId>`, `decision/<id>`) and **Auto-Batching** across `off`, `observe`, and `auto` accept modes. See [docs/001-domain.md](docs/001-domain.md) and [docs/002-router-and-jev.md](docs/002-router-and-jev.md).
 
-2. **多态 Worker 引擎与级联模型目录**
-   - 每个工单在独立的 Git Worktree（`.nexus/worktrees/work-<id>`）中并发运行。
-   - 自动探测宿主机与 Agent 生态的 5 大 Harness 真实配置目录：
-     - `codex`：自动读取 `~/.codex/config.toml` 与 `~/.codex/models_cache.json`
-     - `claude-code`：自动读取 `~/.claude/settings.json` 与 `modelPicker`
-     - `pi-native` / `pi-rpc`：自动合并 `~/.pi/agent/models.json`（支持自定义 `hub`、`kimi-coding` 等 Provider）、`~/.pi/agent/settings.json`、`models-store.json` 与 `pi --list-models`
-     - `opencode`：自动读取 `~/.config/opencode/opencode.json` 与 `opencode models`
+2. **Polymorphic Worker Pool & Priority Concurrency**
+   - Every ticket operates in an isolated `git worktree` (`.nexus/worktrees/<short_name>`) on branch `agent/<short_name>`.
+   - Priority-aware `WorkerSlots` (`max_concurrent_workers`, default `4`) reserves at least one slot for human wakeups when `N >= 2` so interactive follow-ups never queue behind background tasks.
+   - Unified `WorkerHarnessDriver` supports `codex`, `claude-code`, `pi-native` (in-process ReAct loop with automatic `Planning -> Implementation` effort downgrade after the first file edit), `pi-rpc`, and `opencode`.
+   - `GET /api/worker/models` merges installed catalogs from `pi --list-models`, `~/.pi/agent/{models.json,settings.json,models-store.json}`, `~/.codex/{config.toml,models_cache.json}`, `~/.claude/settings.json`, and `~/.config/opencode/opencode.json`. See [docs/003-worker-harnesses.md](docs/003-worker-harnesses.md).
 
-3. **独立身份沙箱（Isolated Agent Identity）**
-   - `.nexus/agent-home/gh`：存放 Nexus 专属 GitHub CLI 登录态（`GH_CONFIG_DIR` 隔离），与宿主机本机 `~/.config/gh` 完全分离。
-   - `.nexus/worker-gitconfig`：强制注入 Worker 的独立 `user.name` 与 `user.email`，并自动将 `https://github.com/` 的 Git push/fetch 凭证代理至隔离的 `gh-agent auth git-credential`。
-   - `.nexus/worker-bin/`：自动为 Worker 注入 `gh`、`lark-cli`、`gws`、`dws` 隔离垫片并净化敏感环境变量。
+3. **Identity Sandbox, Shims & Rich Channel Delivery**
+   - `<state_dir>/worker-bin/` exposes `gh-agent` (plus `gh`), `lark-bot` (plus `lark-cli`), `gws-agent` (plus `gws`), `dws-agent` (plus `dws`), and `nexus-worker`, backed by `<state_dir>/worker-gitconfig` (`GIT_CONFIG_GLOBAL`).
+   - Supports `AgentIdentityConfig.use_host_gh` when workers need host `gh` write access while retaining isolated commit identity or Feishu/DingTalk profiles.
+   - Supports Markdown rich text and local/web image delivery through DingTalk (`dws-agent`) and Feishu (`lark-bot`). See [docs/004-persistence-and-shims.md](docs/004-persistence-and-shims.md) and [docs/005-adapters-matrix.md](docs/005-adapters-matrix.md).
 
-4. **全链路可观测性与 React + TypeScript 控制台**
-   - 内置基于 **React 19 + TypeScript + Vite + Tailwind CSS v4** 构建的现代化 Web 控制台（默认监听 `http://127.0.0.1:3082`）：
-     - **活跃工单与热切换**：支持按仓库筛选工单、一键打开 GitHub PR、运行中热切换 `Harness × Provider × Model × Think Effort`（带实时关键字搜索过滤下拉框）。
-     - **Worker 内部轨迹分析器**：实时流式展示每个工单内部的启动 Prompt、思考推理链（`💭 Thinking`）、Shell 命令调用（`🔧 Tool Call`）、标准输出（`📤 Stdout`）与 Token 消耗。
-     - **独立身份对比矩阵**：直观对比宿主机账号与奈克斯独立账号的隔离状态。
-     - **长期记忆管理（`MEMORY.md`）**：工单完成交付或敲定架构决策时自动去重归档至 `.nexus/MEMORY.md`，并支持在线编辑。
+4. **Dual-Mode Web Console (`127.0.0.1:3082`)**
+   - Built with **React 19 + TypeScript + Vite + Tailwind CSS v4** (`web/`):
+     - **Collaborative Workspace (`#workspace`, default)**: Slack-style channel view (`Inbox`, `General`, `Active`, per-repository `#repo` channels, per-source channels), status filters, inline engine/model/think picker (`POST /api/triggers`), and a slide-over Thread + Worker Trace Drawer.
+     - **Control Plane Admin (`#admin`)**: Ticket dashboard with mid-flight hot-switching, live Worker Trace studio (`.nexus/traces/*.jsonl`), conversation stream, Dual-Engine Router & Jev tester, `MEMORY.md` editor, identity isolation matrix, and toolchain configuration.
 
 ---
 
-## 安装与快速上手
+## Quick Start
 
-### 环境要求
-- **编译与运行时**：Rust 1.85+（Edition 2024）、Node.js 20+（用于构建 `web/` 前端工程）、`git` 2.32+
-- **按需安装的外部 CLI**：
-  - GitHub 协作：`gh` (GitHub CLI)
-  - 飞书接入：`lark-cli`
-  - 钉钉 / Google Workspace（可选）：`dws`、`gws`
-  - 外部 Worker Harness（可选）：`codex`、`claude`、`pi`、`opencode`
+### Prerequisites
 
-### 编译构建
+- **Build & Runtime**: Rust `1.85+` (Edition 2024), Node.js `20+` (for building `web/`), `git` `2.32+`
+- **Optional Channel & Harness CLIs**: `gh`, `lark-cli`, `dws`, `gws`, `codex`, `claude`, `pi`, `opencode`
+
+### Build
 
 ```bash
 git clone https://github.com/xdlkc/nexus.git
 cd nexus
 
-# 1. 构建 TypeScript 前端控制台 (输出至 web/dist)
+# 1. Build the Web console bundle (outputs to web/dist)
 cd web && npm install && npm run build && cd ..
 
-# 2. 编译 Rust 核心二进制
+# 2. Build the Rust daemon and CLI
 cargo build --release
 ```
 
-### 启动与管理
+### Setup & Run
 
 ```bash
-# 初始化 .nexus 状态目录与独立身份隔离沙箱
+# Probe local tools, provision .nexus/worker-bin shims, and write .nexus/config.json
 ./target/release/nexus setup --state-dir .nexus
 
-# 为奈克斯登录独立的 GitHub 账号（与本机 gh 完全隔离）
+# Authenticate an isolated GitHub CLI identity (separate from ~/.config/gh)
 GH_CONFIG_DIR="$PWD/.nexus/agent-home/gh" gh auth login -h github.com -p https -w
 
-# 启动常驻守护服务（同时挂载 HTTP/Web 控制台 127.0.0.1:3082）
+# Start the daemon and HTTP/Web console on http://127.0.0.1:3082
 ./target/release/nexus start --state-dir .nexus
 ```
 
-服务启动后，浏览器打开 `http://127.0.0.1:3082` 即可进入 **Nexus Super-Agent Control Plane**。
+Useful CLI subcommands:
+
+- `nexus start --state-dir .nexus --once`: Run a single deterministic poll + effect-drain cycle and exit with JSON summary.
+- `nexus status --api-url http://127.0.0.1:3082`: Query live state from a running daemon.
+- `nexus worker report|read|handback|switch-target`: Callback commands used by worker harnesses via `nexus-worker`.
 
 ---
 
-## 开发与测试
+## Testing
 
 ```bash
-# 运行全部单元、集成与端到端仿真测试
+# Run all unit, integration, and end-to-end simulation tests
 cargo test
 
-# 前端类型检查与生产构建
+# Verify frontend TypeScript types and production bundle
 cd web && npm run build
 ```
 
 ---
 
-## 许可证
+## Documentation
 
-MIT
+- [001 — Domain Model & State Contracts](docs/001-domain.md)
+- [002 — Dual-Engine Router & Context Cache](docs/002-router-and-jev.md)
+- [003 — Polymorphic Worker Pool & Harnesses](docs/003-worker-harnesses.md)
+- [004 — Persistence, Credential Shims & Watchdog](docs/004-persistence-and-shims.md)
+- [005 — Peripheral Adapters Matrix](docs/005-adapters-matrix.md)
+
+---
+
+## License
+
+MIT (as declared in [Cargo.toml](Cargo.toml))
