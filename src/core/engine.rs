@@ -215,6 +215,8 @@ impl Engine {
                         started_at: now.clone(),
                         ended_at: None,
                         latest_report: None,
+                        automatic_continuation: false,
+                        pending_report: None,
                     });
                     resumed_assignment_to_launch = Some(assign_id);
                 } else if let Some(a) = ticket.latest_assignment() {
@@ -380,6 +382,8 @@ impl Engine {
             started_at: now.to_owned(),
             ended_at: None,
             latest_report: None,
+            automatic_continuation: false,
+            pending_report: None,
         };
 
         let input_id = self.next_id("inp");
@@ -536,6 +540,8 @@ impl Engine {
             started_at: now.to_owned(),
             ended_at: None,
             latest_report: None,
+            automatic_continuation: false,
+            pending_report: None,
         });
         ticket.delivery_error = None;
 
@@ -549,6 +555,76 @@ impl Engine {
         );
 
         Ok(new_assign_id)
+    }
+
+    pub fn continue_issue_assignment(
+        &mut self,
+        ticket_id: &str,
+        assignment_id: &str,
+        summary: &str,
+        git_status: &str,
+        now: &str,
+    ) -> bool {
+        let Some(ticket) = self.state.tickets.get_mut(ticket_id)
+            .filter(|ticket| ticket.is_open() && ticket.github_issue().is_some())
+        else {
+            return false;
+        };
+        let Some(assignment) = ticket.latest_assignment_mut()
+            .filter(|assignment| assignment.id == assignment_id
+                && assignment.status == AssignmentStatus::Running
+                && !assignment.automatic_continuation)
+        else {
+            return false;
+        };
+        assignment.latest_report = Some(AssignmentReport {
+            status: ReportStatus::Blocked,
+            summary: summary.to_owned(),
+            question: None,
+            pull_request_url: None,
+            at: now.to_owned(),
+        });
+        let target = assignment.target.clone();
+        assignment.pending_report = None;
+        if let Ok(next_id) = self.switch_execution_target(
+            ticket_id, target, "Finish unpublished GitHub issue work", git_status, now,
+        ) && let Some(next) = self.state.tickets.get_mut(ticket_id).and_then(Ticket::latest_assignment_mut)
+            && next.id == next_id
+        {
+            next.automatic_continuation = true;
+            return true;
+        }
+        false
+    }
+
+    pub fn recover_interrupted_issue_assignments(&mut self, now: &str) -> bool {
+        let mut recovered = false;
+        for ticket in self.state.tickets.values_mut() {
+            if !ticket.is_open() || ticket.github_issue().is_none() {
+                continue;
+            }
+            let Some(assignment) = ticket.latest_assignment_mut()
+                .filter(|assignment| assignment.status == AssignmentStatus::Running)
+            else {
+                continue;
+            };
+            let last_report = assignment.pending_report.take().or_else(|| assignment.latest_report.take());
+            let mut summary = "Nexus restarted before this assignment could be verified. Check that the previous worker has stopped before resuming this worktree.".to_owned();
+            if let Some(report) = last_report {
+                summary.push_str(&format!("\n\nLast unverified report: {}", report.summary));
+            }
+            assignment.status = AssignmentStatus::Ended;
+            assignment.ended_at = Some(now.to_owned());
+            assignment.latest_report = Some(AssignmentReport {
+                status: ReportStatus::Blocked,
+                summary,
+                question: None,
+                pull_request_url: None,
+                at: now.to_owned(),
+            });
+            recovered = true;
+        }
+        recovered
     }
 
     /// Stops an open Ticket on human request and withdraws its Mandate.
@@ -585,6 +661,13 @@ impl Engine {
         now: &str,
     ) -> Result<(), String> {
         let summary_str = summary.into();
+        let issue_progress = status == ReportStatus::Progress
+            && self.state.tickets.get(ticket_id).is_some_and(|ticket| ticket.github_issue().is_some());
+        let (pull_request_thread_key, pull_request_url, question) = if issue_progress {
+            (None, None, None)
+        } else {
+            (pull_request_thread_key, pull_request_url, question)
+        };
 
         if let Some(pr_thread) = &pull_request_thread_key {
             self.bind_pull_request(ticket_id, pr_thread, true);
@@ -614,6 +697,7 @@ impl Engine {
                 ) {
                     assign.status = AssignmentStatus::Ended;
                     assign.ended_at = Some(now.to_owned());
+                    assign.pending_report = None;
                 } else {
                     assign.status = AssignmentStatus::Running;
                 }
@@ -839,6 +923,8 @@ impl Engine {
                             started_at: now.to_owned(),
                             ended_at: None,
                             latest_report: None,
+                            automatic_continuation: false,
+                            pending_report: None,
                         });
                         resumed_assignment_to_launch = Some(assign_id);
                     } else {
@@ -1009,6 +1095,13 @@ impl Engine {
         });
 
         let running_assign = ticket.latest_assignment().map(|a| a.id.clone());
+        let resume_issue_target = (ticket.github_issue().is_some()
+            && ticket.is_open()
+            && !trigger.actor_is_bot)
+            .then(|| ticket.latest_assignment())
+            .flatten()
+            .filter(|assignment| assignment.status == AssignmentStatus::Ended)
+            .map(|assignment| assignment.target.clone());
 
         if let Some(thread) = self.state.threads.get_mut(&trigger.thread_key) {
             thread.subscribed_tickets.insert(ticket_id.to_owned());
@@ -1031,7 +1124,9 @@ impl Engine {
             },
         );
 
-        if let Some(assign_id) = running_assign {
+        if let Some(target) = resume_issue_target {
+            self.switch_execution_target(ticket_id, target, "Human follow-up on an idle issue", "", now)?;
+        } else if let Some(assign_id) = running_assign {
             self.enqueue_effect(
                 format!("deliver:{ticket_id}"),
                 EffectKind::DeliverInputs {

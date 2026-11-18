@@ -1,14 +1,14 @@
 //! End-to-end `NexusRuntime` control loop coordinating Sources, Gate, Dual-Engine Router,
 //! Polymorphic Worker Pool, Outbox delivery, and SQLite persistence.
 
-use crate::adapters::feishu::FeishuAdapter;
+use crate::adapters::feishu::{FeishuAdapter, IMPLICIT_TASK_ELIGIBLE};
 use crate::adapters::github::GithubAdapter;
 use crate::adapters::im_channels::DingtalkAdapter;
 use crate::adapters::traits::{ChannelAdapter, SourceAdapter};
 use crate::config::NexusConfig;
 use crate::core::engine::Engine;
 use crate::core::gate::evaluate_gate_strength;
-use crate::core::model::{EffectKind, HarnessKind};
+use crate::core::model::{AssignmentStatus, EffectKind, HarnessKind, ReportStatus};
 use crate::infra::effects::{mark_outbox_sent, pop_next_effect, record_effect_failure};
 use crate::infra::shims::provision_agent_workspace_from_config;
 use crate::infra::store::SqliteStore;
@@ -19,9 +19,11 @@ use crate::workers::dispatcher::{
     WorkerSlots, build_worker_prompt_with_memory, infer_launch_priority,
 };
 use crate::workers::driver::{
-    WorkerLaunchContext, run_cli_harness_worker, run_pi_native_worker,
+    WorkerExecutionResult, WorkerLaunchContext, run_cli_harness_worker, run_pi_native_worker,
 };
-use crate::workers::worktree::prepare_worktree;
+use crate::workers::worktree::{
+    capture_git_status_diff, check_issue_delivery, is_issue_worktree, prepare_worktree,
+};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -63,6 +65,13 @@ where
             let _ = provision_agent_workspace_from_config(&cfg);
             cfg.max_concurrent_workers
         };
+        {
+            let mut engine = engine.lock().unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            if engine.recover_interrupted_issue_assignments(&now) {
+                store.save_engine_state(&engine.state, &now)?;
+            }
+        }
 
         Ok(Self {
             engine,
@@ -128,7 +137,7 @@ where
             let adapter = FeishuAdapter::new(std::mem::take(&mut feishu_cfg));
             if let Ok(poll_out) = adapter.poll(cursor.as_deref()).await {
                 let mut eng = self.engine.lock().unwrap();
-                for trig in poll_out.triggers {
+                for mut trig in poll_out.triggers {
                     let is_subscribed_thread = eng
                         .state
                         .threads
@@ -146,6 +155,18 @@ where
                         && strength == crate::core::model::AdmissionStrength::NotAdmitted
                     {
                         strength = crate::core::model::AdmissionStrength::Explicit;
+                    }
+                    if strength == crate::core::model::AdmissionStrength::Inferred
+                        && !trig.actor_is_bot
+                        && policy.allowed_actors.contains(&trig.actor_id)
+                        && matches!(
+                            &trig.reply_channel,
+                            Some(crate::core::model::ChannelAddress::FeishuTopic { chat_id, .. })
+                                if adapter.config.chat_ids.contains(chat_id)
+                        )
+                    {
+                        trig.meta
+                            .insert(IMPLICIT_TASK_ELIGIBLE.to_owned(), true.into());
                     }
                     eng.receive_trigger(trig, strength);
                     summary.polled_triggers += 1;
@@ -305,6 +326,8 @@ where
                         if let Some(ticket) = eng.state.tickets.get(ticket_id) {
                             if let Some(assign) =
                                 ticket.assignments.iter().find(|a| &a.id == assignment_id)
+                                && (ticket.github_issue().is_none()
+                                    || (ticket.is_open() && assign.status == AssignmentStatus::Pending))
                             {
                                 let priority = infer_launch_priority(ticket);
                                 let prompt = build_worker_prompt_with_memory(
@@ -313,7 +336,19 @@ where
                                     Some(&eng.state),
                                     Some(&cfg.state_dir),
                                 );
-                                let repo_checkout = ticket
+                                let github_issue = ticket.github_issue().map(|(repo, _)| {
+                                    let gh_bin = if cfg.github.gh_bin == Path::new("gh") {
+                                        cfg.state_dir.join("worker-bin").join("gh-agent")
+                                    } else {
+                                        cfg.github.gh_bin.clone()
+                                    };
+                                    let gh_bin = std::fs::canonicalize(&gh_bin).unwrap_or(gh_bin);
+                                    (repo.to_owned(), gh_bin)
+                                });
+                                let repo_checkout = if let Some((repo, _)) = &github_issue {
+                                    cfg.repositories.get(repo).cloned()
+                                } else {
+                                    ticket
                                     .repo
                                     .as_ref()
                                     .and_then(|r| cfg.repositories.get(r))
@@ -324,7 +359,8 @@ where
                                     })
                                     .or_else(|| cfg.repositories.get("xdlkc/nexus"))
                                     .or_else(|| cfg.repositories.values().next())
-                                    .cloned();
+                                    .cloned()
+                                };
                                 let reaction_msg_id = ticket
                                     .inputs
                                     .iter()
@@ -375,6 +411,7 @@ where
                                     assign.clone(),
                                     prompt,
                                     repo_checkout,
+                                    github_issue,
                                     cfg.state_dir.clone(),
                                     format!("http://{}", cfg.http_addr),
                                     cfg.feishu.clone(),
@@ -397,6 +434,7 @@ where
                         assign,
                         prompt,
                         repo_checkout,
+                        github_issue,
                         state_dir,
                         api_url,
                         feishu_cfg_for_reaction,
@@ -441,13 +479,43 @@ where
                     }
 
                     let wt_path = Path::new(&assign.worktree_dir);
-                    let _ = prepare_worktree(repo_checkout.as_deref(), wt_path, &short_name).await;
+                    let prepared = (github_issue.is_none()
+                        || repo_checkout.as_ref().is_some_and(|repo| repo.join(".git").exists()))
+                        && prepare_worktree(repo_checkout.as_deref(), wt_path, &short_name).await.is_ok();
+                    let branch = format!("agent/{short_name}");
+                    if let Some((repo, _)) = &github_issue {
+                        let valid = prepared
+                            && is_issue_worktree(wt_path, repo_checkout.as_deref(), &branch).await;
+                        let mut eng = self.engine.lock().unwrap();
+                        let current = eng.state.tickets.get_mut(ticket_id)
+                            .filter(|ticket| ticket.is_open())
+                            .and_then(|ticket| ticket.latest_assignment_mut())
+                            .filter(|assignment| assignment.id == *assignment_id
+                                && assignment.status == AssignmentStatus::Pending);
+                        if let Some(assignment) = current {
+                            if !valid {
+                                let _ = eng.record_worker_report(
+                                    ticket_id, ReportStatus::Blocked,
+                                    format!("Cannot prepare `{branch}` for `{repo}`. Check the configured checkout and preserved worktree before retrying."),
+                                    None, None, None, now,
+                                );
+                                self.store.save_engine_state(&eng.state, now)?;
+                                self.slots.release(assignment_id);
+                                continue;
+                            }
+                            assignment.status = AssignmentStatus::Running;
+                        } else {
+                            self.slots.release(assignment_id);
+                            continue;
+                        }
+                    }
 
                     let (progress_tx, mut progress_rx) =
                         tokio::sync::mpsc::unbounded_channel::<String>();
                     let progress_engine = Arc::clone(&self.engine);
                     let progress_store = Arc::clone(&self.store);
                     let progress_ticket_id = ticket_id.clone();
+                    let progress_assignment_id = assignment_id.clone();
                     let progress_feishu_cfg = feishu_cfg_for_reaction;
                     let progress_dingtalk_cfg = dingtalk_cfg_for_reaction;
                     let progress_channel = reply_channel_for_progress;
@@ -459,6 +527,15 @@ where
                             let ts = chrono::Utc::now().to_rfc3339();
                             {
                                 let mut eng = progress_engine.lock().unwrap();
+                                if let Some(ticket) = eng.state.tickets.get(&progress_ticket_id)
+                                    && ticket.github_issue().is_some()
+                                    && (!ticket.is_open() || !ticket.latest_assignment().is_some_and(|assignment| {
+                                        assignment.id == progress_assignment_id
+                                            && assignment.status == AssignmentStatus::Running
+                                    }))
+                                {
+                                    continue;
+                                }
                                 let _ = eng.record_worker_report(
                                     &progress_ticket_id,
                                     crate::core::model::ReportStatus::Progress,
@@ -500,6 +577,7 @@ where
                         api_url,
                         prompt,
                         max_turns: 28,
+                        github_issue: github_issue.is_some(),
                         progress_tx: Some(progress_tx),
                     };
 
@@ -530,18 +608,63 @@ where
 
                     self.slots.release(assignment_id);
 
+                    let done_at = chrono::Utc::now().to_rfc3339();
+                    let (exec_res, continuation) = if let Some((repo, gh_bin)) = &github_issue {
+                        let mut out = exec_res.unwrap_or_else(|error| WorkerExecutionResult {
+                            status: ReportStatus::Failed,
+                            summary: format!("Worker could not finish: {error}"),
+                            question: None,
+                            pull_request_thread_key: None,
+                            pull_request_url: None,
+                            raw_output: String::new(),
+                        });
+                        let reported = {
+                            let eng = self.engine.lock().unwrap();
+                            let Some(current) = eng.state.tickets.get(ticket_id)
+                                .filter(|ticket| ticket.is_open())
+                                .and_then(|ticket| ticket.latest_assignment())
+                                .filter(|assignment| assignment.id == *assignment_id
+                                    && assignment.status == AssignmentStatus::Running)
+                            else { continue };
+                            current.pending_report.clone()
+                        };
+                        if let Some(report) = reported {
+                            out.status = report.status;
+                            out.summary = report.summary;
+                            out.question = report.question;
+                            out.pull_request_thread_key = None;
+                            out.pull_request_url = report.pull_request_url;
+                        }
+                        let problem = issue_delivery_problem(wt_path, gh_bin, repo, &branch, &mut out).await;
+                        let continuation = if let Some(problem) = problem {
+                            out.status = ReportStatus::Blocked;
+                            out.question = None;
+                            out.summary = format!("GitHub issue not delivered: {problem}.\n\n{}", out.summary);
+                            Some(capture_git_status_diff(wt_path).await)
+                        } else {
+                            None
+                        };
+                        (Ok(out), continuation)
+                    } else {
+                        (exec_res, None)
+                    };
                     let mut eng = self.engine.lock().unwrap();
                     match exec_res {
                         Ok(worker_out) => {
-                            let already_reported = eng
+                            let still_current = eng
                                 .state
                                 .tickets
                                 .get(ticket_id)
-                                .and_then(|t| t.assignments.iter().find(|a| &a.id == assignment_id))
-                                .is_some_and(|a| {
-                                    a.status == crate::core::model::AssignmentStatus::Ended
-                                });
-                            if !already_reported {
+                                .filter(|ticket| ticket.is_open())
+                                .and_then(|ticket| ticket.latest_assignment())
+                                .is_some_and(|assignment| assignment.id == *assignment_id
+                                    && assignment.status != AssignmentStatus::Ended);
+                            let continued = still_current && continuation.as_ref().is_some_and(|git_status| {
+                                eng.continue_issue_assignment(
+                                    ticket_id, assignment_id, &worker_out.summary, git_status, &done_at,
+                                )
+                            });
+                            if still_current && !continued {
                                 let _ = eng.record_worker_report(
                                     ticket_id,
                                     worker_out.status,
@@ -549,11 +672,11 @@ where
                                     worker_out.question,
                                     worker_out.pull_request_thread_key,
                                     worker_out.pull_request_url,
-                                    now,
+                                    &done_at,
                                 );
                             }
                             summary.launched_assignments += 1;
-                            self.store.save_engine_state(&eng.state, now)?;
+                            self.store.save_engine_state(&eng.state, &done_at)?;
                             if let Ok(cfg) = self.config.lock() {
                                 consolidate_memory_file(&cfg, &eng.state);
                             }
@@ -617,6 +740,53 @@ where
         }
 
         Ok(())
+    }
+}
+
+async fn issue_delivery_problem(
+    worktree: &Path,
+    gh_bin: &Path,
+    repo: &str,
+    branch: &str,
+    out: &mut WorkerExecutionResult,
+) -> Option<&'static str> {
+    let reported_url = out.pull_request_url.take();
+    let reported_pr = out.pull_request_thread_key.take().is_some() || reported_url.is_some();
+    if out.status == ReportStatus::Dropped
+        || (out.status == ReportStatus::Waiting
+            && out.question.as_ref().is_some_and(|question| !question.trim().is_empty()))
+    {
+        return None;
+    }
+
+    match check_issue_delivery(worktree, gh_bin, repo, branch, reported_pr).await {
+        Ok(Some((thread, url))) => {
+            if let Some(reported_url) = reported_url.filter(|reported| reported != &url) {
+                out.summary = out.summary.replace(&reported_url, &url);
+            }
+            if !out.summary.contains(&url) {
+                out.summary.push_str(&format!("\n\nPR: {url}"));
+            }
+            out.pull_request_thread_key = Some(thread);
+            out.pull_request_url = Some(url);
+            if matches!(out.status, ReportStatus::Ready | ReportStatus::Waiting) {
+                None
+            } else {
+                Some("the PR is published, but the worker reported unfinished work")
+            }
+        }
+        Ok(None) if out.status == ReportStatus::Ready => {
+            if let Some(summary) = out.summary.trim().strip_prefix("Read-only: ")
+                && !summary.trim().is_empty()
+            {
+                out.summary = summary.to_owned();
+                None
+            } else {
+                Some("no pull request was published and no completed read-only result was reported")
+            }
+        }
+        Ok(None) => Some("the worker stopped without a finished result or a specific question for a person"),
+        Err(problem) => Some(problem),
     }
 }
 

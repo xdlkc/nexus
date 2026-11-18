@@ -76,10 +76,12 @@ flowchart TD
 1. **三级事件过滤与双核路由（Dual-Engine Router）**
    - **Tier-0（确定性快路径 `Gate`）**：毫秒级校验白名单、唤醒词、Bot 自回声过滤、`(sourceId, externalId)` 幂等去重与行内指令（`[harness:provider/model:think]`）；对已绑定工单的话题通过 **Subscription Fan-out** 直通对应 Worker。
    - **Tier-1（判别式分诊器 `Jev`）**：支持本地启发式 `HeuristicJevClassifier` 与远端 `HttpJevClient`，执行提示词注入防火墙（`injection_risk >= 0.80` 拦截）、主动规则并发评估、路由动作判定与 `(task_kind, complexity)` 定级。
+   - **飞书免唤醒词**：私聊和已绑定工单的话题回复无需 @ 机器人。在 `auto` 模式下，`allowed_actors` 白名单里的用户在 `feishu.chat_ids` 配置的群聊中说“帮我给登录模块补一个回归测试”，远端 Jev 可以识别这种明确请求并新建工单。普通闲聊、只 @ 其他人的消息不会走这条路径。机器人须能收到未 @ 的群消息；本地回退不会推断这类任务请求。
    - **Tier-2（生成式 `Router`）**：负责跨任务协调、**Inline & Spill + 链式召回**（`trigger/<id>`、`thread/<key>`、`ticket/<id>`、`ticket/<id>/report/<assignmentId>`、`decision/<id>`）以及事件密集时的 **Auto-Batching**（支持 `off | observe | auto` 接单模式）。详见 [docs/001-domain.md](docs/001-domain.md) 与 [docs/002-router-and-jev.md](docs/002-router-and-jev.md)。
 
 2. **多态 Worker 引擎、优先级槽位与级联模型目录**
    - 每个工单在独立的 Git Worktree（`.nexus/worktrees/<short_name>`，分支 `agent/<short_name>`）中运行，通过 `HandoffCard` 在热切换 Harness 时无缝交接上下文与工作区 Diff。
+   - **GitHub Issue 交付**：Worker 未交付就停下时，奈克斯会用原分支和工作区自动接续一次。代码改动须确认当前提交已进入开放或已合并的 PR，才标记为待审；需要人工回答具体问题时不自动接续。守护进程本身在执行中重启时，须由人工跟进恢复。Shuttle 的状态回执不会唤醒工单。
    - `WorkerSlots`（默认 `max_concurrent_workers = 4`）在 `N >= 2` 时为人类唤醒消息保留专用槽位，避免人工跟进被后台任务饿死。
    - 统一 `WorkerHarnessDriver` 覆盖 `codex`、`claude-code`、`pi-native`（内置 ReAct 循环，首次文件编辑后自动从 `Planning` 降档至 `Implementation` 推理强度）、`pi-rpc` 与 `opencode`。
    - `GET /api/worker/models` 自动聚合 `pi --list-models`、`~/.pi/agent/{models.json,settings.json,models-store.json}`、`~/.codex/{config.toml,models_cache.json}`、`~/.claude/settings.json` 与 `~/.config/opencode/opencode.json`。详见 [docs/003-worker-harnesses.md](docs/003-worker-harnesses.md)。

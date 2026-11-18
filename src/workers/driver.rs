@@ -84,6 +84,7 @@ pub struct WorkerLaunchContext {
     pub api_url: String,
     pub prompt: String,
     pub max_turns: usize,
+    pub github_issue: bool,
     /// Optional real-time channel for streaming intermediate thinking / progress notes (`💭 ...`) to IM while working.
     pub progress_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
@@ -437,6 +438,16 @@ impl BackgroundJobManager {
             "killed": true,
         }))
     }
+
+    async fn running_job_ids(&self) -> Vec<&str> {
+        let mut running = Vec::new();
+        for (job_id, job) in &self.jobs {
+            if job.finished.lock().await.is_none() {
+                running.push(job_id.as_str());
+            }
+        }
+        running
+    }
 }
 
 /// Tool specifications exposed to the built-in `pi-native` ReAct Worker.
@@ -544,7 +555,7 @@ pub async fn run_pi_native_worker<L: LlmClient>(
             "You are a Nexus `pi-native` autonomous engineering worker.\n\
              Active Runtime Engine: harness=`pi-native` (built-in Rust ReAct loop inside the `nexus` daemon process), provider=`{}`, model=`{}`, think_effort=`{}`.\n\
              Strict Workspace Boundary: All file operations, searches, and shell commands MUST stay strictly inside the current worktree (`{}`). NEVER access or scan host directories outside the worktree (such as `~`, `$HOME`, `~/Documents`, `~/Desktop`, `~/Downloads`, or `~/.dsh`). If an external tool or project mentioned in the task is not found in the current repository, do NOT search the host disk—immediately call `worker_report` with `status=\"waiting\"` and `question` to ask the user for clarification.\n\
-             Inspect files, make minimal accurate edits, verify with tests, and finish promptly by calling `worker_report` with a concise Chinese summary (<= 85 characters).",
+             Inspect files, implement the task, run verification, and finish by calling `worker_report` with a concise Chinese summary.",
             ctx.target.provider,
             ctx.target.model,
             current_effort.as_str(),
@@ -559,7 +570,7 @@ pub async fn run_pi_native_worker<L: LlmClient>(
     let max_turns = ctx.max_turns.max(1);
 
     for turn in 0..max_turns {
-        if turn > 0 && turn + 1 == max_turns {
+        if !ctx.github_issue && turn > 0 && turn + 1 == max_turns {
             messages.push(LlmMessage::user(
                 "已达到最大工具轮次，请勿再执行其他命令，立即调用 `worker_report` 提交最终简短中文结论（<= 85 字）。",
             ));
@@ -679,6 +690,16 @@ pub async fn run_pi_native_worker<L: LlmClient>(
                         "dropped" => ReportStatus::Dropped,
                         _ => ReportStatus::Ready,
                     };
+                    if ctx.github_issue && status == ReportStatus::Ready {
+                        let running = jobs.running_job_ids().await;
+                        if !running.is_empty() {
+                            messages.push(LlmMessage::tool_result(tc.id, serde_json::json!({
+                                "error": "Background commands are still running. Use job_output to validate their results before reporting ready.",
+                                "running_job_ids": running,
+                            }).to_string()));
+                            continue;
+                        }
+                    }
                     let raw_summary = tc
                         .arguments
                         .get("summary")
@@ -883,8 +904,10 @@ pub async fn run_pi_native_worker<L: LlmClient>(
     }
 
     Ok(WorkerExecutionResult {
-        status: ReportStatus::Ready,
-        summary: if last_text.is_empty() {
+        status: if ctx.github_issue { ReportStatus::Blocked } else { ReportStatus::Ready },
+        summary: if ctx.github_issue && last_text.is_empty() {
+            "Worker stopped before reporting a verified outcome".to_owned()
+        } else if last_text.is_empty() {
             "Finished worker execution".to_owned()
         } else {
             last_text.chars().take(300).collect()

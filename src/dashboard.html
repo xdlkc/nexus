@@ -694,7 +694,7 @@
             </div>
             <div class="form-group">
               <label>Jev 模型名称 (`jev.model`)</label>
-              <input type="text" id="cfg-jev-model" placeholder="例如 jev-1 或 typesafe/jev-1" />
+              <input type="text" id="cfg-jev-model" placeholder="例如 jev-latest（TypeSafe）" />
             </div>
             <div class="form-group">
               <label>Jev API Key (`jev.api_key`)</label>
@@ -1311,7 +1311,7 @@
       const modelEl = document.getElementById('cfg-jev-model');
       if (mode === 'typesafe-system-one') {
         if (!urlEl.value) urlEl.value = 'https://api.typesafe.ai/v1';
-        if (!modelEl.value || modelEl.value === 'heuristic-jev-v1') modelEl.value = 'jev-1';
+        if (!modelEl.value || modelEl.value === 'heuristic-jev-v1') modelEl.value = 'jev-latest';
       } else if (mode === 'openrouter-system-one') {
         if (!urlEl.value) urlEl.value = 'https://openrouter.ai/api/v1';
         if (!modelEl.value || modelEl.value === 'heuristic-jev-v1') modelEl.value = 'typesafe/jev-1';
@@ -1437,7 +1437,8 @@
         jev: jevEnabled ? {
           protocol: jevMode,
           base_url: document.getElementById('cfg-jev-base-url').value.trim(),
-          model: document.getElementById('cfg-jev-model').value.trim() || 'jev-1',
+          model: document.getElementById('cfg-jev-model').value.trim() ||
+            (jevMode === 'typesafe-system-one' ? 'jev-latest' : 'jev-1'),
           api_key: document.getElementById('cfg-jev-api-key').value.trim()
         } : null,
         router_llm: {

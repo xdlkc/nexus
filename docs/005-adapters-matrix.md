@@ -28,6 +28,7 @@ Nexus decouples environmental I/O from its core domain state machine via two tra
 - **Inbound Polling (`gh` / `gh-agent`)**:
   - Polls repository Issue/PR comments (`gh-agent api "repos/<owner>/<repo>/issues/comments?since=<cursor>&per_page=30"`) and PR review comments (`gh-agent api "repos/<owner>/<repo>/pulls/comments?since=<cursor>&per_page=30"`).
   - Normalizes PR/Issue threads to `github:pr:<owner>/<repo>#<number>` or `github:issue:<owner>/<repo>#<number>`.
+  - Discards Nexus echoes and Shuttle status comments headed by `<!-- shuttle:<task-id> -->`, even when the latter are posted by a human's authenticated account. Ordinary follow-ups are still delivered.
   - Polls open PR states (`gh-agent pr view <number> --repo <owner>/<repo> --json state,mergedAt`) for any `FollowedThread` (`github:pr:<owner>/<repo>#<number>`) so merged or closed PRs emit `closed_threads` and auto-complete their bound `Ticket`.
 - **Outbound Delivery**:
   - `ChannelAddress::GithubIssueComment`: `gh-agent api "repos/<repo>/issues/<number>/comments" -f body="<text>"`

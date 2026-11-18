@@ -332,6 +332,7 @@ async fn main() -> anyhow::Result<()> {
                     };
                     let payload = WorkerReportPayload {
                         ticket_id: tid,
+                        assignment_id: std::env::var("NEXUS_ASSIGNMENT_ID").ok(),
                         status: rep_status,
                         summary,
                         question,

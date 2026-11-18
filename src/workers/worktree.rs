@@ -3,6 +3,116 @@
 use std::path::Path;
 use tokio::process::Command;
 
+async fn git_text(dir: &Path, args: &[&str]) -> Option<String> {
+    let result = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .await
+        .ok()?;
+    result
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&result.stdout).trim().to_owned())
+}
+
+pub async fn is_issue_worktree(dir: &Path, checkout: Option<&Path>, branch: &str) -> bool {
+    let Some(checkout) = checkout else {
+        return false;
+    };
+    let common_args = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
+    match (
+        git_text(dir, &common_args).await,
+        git_text(checkout, &common_args).await,
+    ) {
+        (Some(worktree_repo), Some(configured_repo)) if worktree_repo == configured_repo => {
+            git_text(dir, &["rev-parse", "--show-prefix"])
+                .await
+                .as_deref()
+                == Some("")
+                && git_text(dir, &["branch", "--show-current"])
+                    .await
+                    .as_deref()
+                    == Some(branch)
+        }
+        _ => false,
+    }
+}
+
+pub async fn check_issue_delivery(
+    dir: &Path,
+    gh_bin: &Path,
+    repo: &str,
+    branch: &str,
+    reported_pr: bool,
+) -> Result<Option<(String, String)>, &'static str> {
+    if git_text(dir, &["branch", "--show-current"])
+        .await
+        .as_deref()
+        != Some(branch)
+    {
+        return Err("the worker did not leave the worktree on the issue branch");
+    }
+    let status = git_text(dir, &["status", "--porcelain", "--untracked-files=normal"])
+        .await
+        .ok_or("could not inspect the Git worktree")?;
+    if !status.is_empty() {
+        return Err("the issue worktree still has uncommitted changes");
+    }
+    let head = git_text(dir, &["rev-parse", "HEAD"])
+        .await
+        .ok_or("could not read the branch HEAD")?;
+    if !reported_pr {
+        let base = git_text(dir, &["symbolic-ref", "refs/remotes/origin/HEAD"])
+            .await
+            .unwrap_or_else(|| "refs/remotes/origin/main".to_owned());
+        if git_text(dir, &["rev-list", "--count", "HEAD", "--not", &base])
+            .await
+            .as_deref() == Some("0")
+        {
+            return Ok(None);
+        }
+    }
+
+    let lookup = Command::new(gh_bin)
+        .kill_on_drop(true)
+        .current_dir(dir)
+        .args([
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--json",
+            "url,state,headRefOid",
+        ])
+        .output();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), lookup)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .filter(|output| output.status.success())
+        .ok_or("GitHub could not verify the issue branch's pull request")?;
+    let prs: Vec<serde_json::Value> = serde_json::from_slice(&result.stdout)
+        .map_err(|_| "GitHub returned an invalid pull request list")?;
+    let prefix = format!("https://github.com/{repo}/pull/");
+    for pr in prs {
+        if matches!(pr["state"].as_str(), Some("OPEN" | "MERGED"))
+            && pr["headRefOid"].as_str() == Some(head.as_str())
+            && let Some(url) = pr["url"].as_str()
+            && let Some(number) = url
+                .strip_prefix(&prefix)
+                .and_then(|part| part.parse::<u64>().ok())
+        {
+            return Ok(Some((format!("github:pr:{repo}#{number}"), url.to_owned())));
+        }
+    }
+    Err("there is no open or merged pull request containing the issue branch's current commit")
+}
+
 /// Prepares a Ticket's dedicated `git worktree` at `worktree_dir` on branch `agent/<short_name>`.
 /// If `worktree_dir` already exists (e.g. during a mid-ticket cross-harness handoff or wakeup),
 /// preserves all existing files and uncommitted changes intact.

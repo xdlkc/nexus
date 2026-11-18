@@ -15,6 +15,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use tokio::process::Command;
 
+pub const IMPLICIT_TASK_ELIGIBLE: &str = "feishu_implicit_task_eligible";
+pub const MENTIONS_OTHERS: &str = "feishu_mentions_others";
+
 fn default_wake_keywords() -> Vec<String> {
     vec!["奈克斯".to_owned(), "nexus".to_owned()]
 }
@@ -328,6 +331,7 @@ pub fn parse_feishu_messages_json(
             .unwrap_or("group");
         let mentioned_bot =
             is_feishu_message_addressed(cfg, chat_type, &extracted_text, mentioned_bot);
+        let meta = feishu_message_meta(item, mentioned_bot);
 
         let (cleaned_text, inline_target) = parse_inline_target_directive(&extracted_text);
         let thread_key = format!("feishu:topic:{chat_id}:{root_id}");
@@ -355,7 +359,7 @@ pub fn parse_feishu_messages_json(
                 reply_to_message_id: message_id,
             }),
             at: at_iso,
-            meta: BTreeMap::new(),
+            meta,
         });
     }
 
@@ -481,6 +485,7 @@ pub fn parse_feishu_event_ndjson(
         }
         let mentioned_bot =
             is_feishu_message_addressed(cfg, chat_type, &extracted_text, mentioned_bot);
+        let meta = feishu_message_meta(&item, mentioned_bot);
 
         let (cleaned_text, inline_target) = parse_inline_target_directive(&extracted_text);
         let thread_key = format!("feishu:topic:{chat_id}:{root_id}");
@@ -508,11 +513,26 @@ pub fn parse_feishu_event_ndjson(
                 reply_to_message_id: message_id,
             }),
             at: at_iso,
-            meta: BTreeMap::new(),
+            meta,
         });
     }
 
     (triggers, max_ts.map(|v| v.to_string()))
+}
+
+fn feishu_message_meta(
+    item: &serde_json::Value,
+    addressed: bool,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut meta = BTreeMap::new();
+    if !addressed
+        && item["mentions"]
+            .as_array()
+            .is_some_and(|mentions| !mentions.is_empty())
+    {
+        meta.insert(MENTIONS_OTHERS.to_owned(), true.into());
+    }
+    meta
 }
 
 fn extract_feishu_message_text(raw_content: &str) -> String {
