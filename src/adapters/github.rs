@@ -250,7 +250,7 @@ pub fn parse_github_issue_comments_json(
             .unwrap_or("unknown")
             .to_owned();
         let body = item.get("body").and_then(|v| v.as_str()).unwrap_or("");
-        if body.contains("<!-- nexus-agent -->") {
+        if body.contains("<!-- nexus-agent -->") || is_shuttle_status_comment(body) {
             continue;
         }
         if login.eq_ignore_ascii_case(&cfg.bot_login) {
@@ -312,6 +312,14 @@ pub fn parse_github_issue_comments_json(
     }
 
     (triggers, latest_iso)
+}
+
+fn is_shuttle_status_comment(body: &str) -> bool {
+    body.trim_start()
+        .lines()
+        .next()
+        .and_then(|header| header.strip_prefix("<!-- shuttle:")?.strip_suffix(" -->"))
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// Parses `/repos/<owner>/<repo>/pulls/comments` JSON array into normalized `Trigger`s.

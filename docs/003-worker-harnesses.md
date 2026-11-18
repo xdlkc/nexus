@@ -47,4 +47,12 @@ custom IDs. Inputs also accept custom values when Pi is missing or its catalog f
 matching its HTTP transports; it still requires Nexus environment credentials and does
 not inherit Pi OAuth credentials or custom provider endpoints.
 
+### GitHub issue completion
+
+Workers read the issue and comments, finish implementation and verification, and publish or update a PR from the ticket's branch. Nexus checks that the worktree is clean and that GitHub reports the same head commit in an open or merged PR. A finished investigation without a patch can report `ready` with a summary starting with `Read-only: `.
+
+If a worker stops before delivery, Nexus queues at most one continuation per attempt with the same model, worktree, Git status and previous summary. It does not repeat an explicit wait for a person's answer, and reports the blocker if delivery still fails. If the daemon itself restarts while an assignment runs, Nexus marks the attempt blocked instead of launching a second worker into a potentially active worktree. A human follow-up can resume it once the previous worker has stopped. PRs are not merged automatically.
+
+GitHub issue reports submitted through `POST /api/worker/report` must include the current `assignment_id`. The `nexus worker report` CLI supplies it from `NEXUS_ASSIGNMENT_ID`. Terminal reports are finalized only after the worker exits and Nexus checks the result.
+
 Regression checks: `cargo test` and `node --test tests/dashboard/model_choices.cjs`.

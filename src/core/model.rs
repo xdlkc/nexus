@@ -421,6 +421,10 @@ pub struct Assignment {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub latest_report: Option<AssignmentReport>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automatic_continuation: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_report: Option<AssignmentReport>,
 }
 
 use std::string;
@@ -499,6 +503,11 @@ pub struct Ticket {
 }
 
 impl Ticket {
+    pub fn github_issue(&self) -> Option<(&str, u64)> {
+        let (repo, number) = self.origin_thread_key.strip_prefix("github:issue:")?.split_once('#')?;
+        Some((repo, number.parse().ok()?))
+    }
+
     pub fn is_open(&self) -> bool {
         self.ended.is_none()
     }

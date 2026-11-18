@@ -42,6 +42,7 @@ pub struct SharedAppState {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkerReportPayload {
     pub ticket_id: String,
+    pub assignment_id: Option<String>,
     pub status: ReportStatus,
     pub summary: String,
     pub question: Option<String>,
@@ -695,7 +696,10 @@ async fn handle_test_jev(
         inline_target,
         reply_channel: None,
         at: chrono::Utc::now().to_rfc3339(),
-        meta: BTreeMap::new(),
+        meta: BTreeMap::from([(
+            crate::adapters::feishu::IMPLICIT_TASK_ELIGIBLE.to_owned(),
+            true.into(),
+        )]),
     };
 
     let triggers = vec![trig];
@@ -896,6 +900,34 @@ async fn handle_worker_report(
 ) -> (StatusCode, Json<serde_json::Value>) {
     let now = chrono::Utc::now().to_rfc3339();
     let mut eng = app.engine.lock().unwrap();
+    if let Some(ticket) = eng.state.tickets.get_mut(&payload.ticket_id)
+        && ticket.github_issue().is_some()
+    {
+        let current = ticket.is_open().then(|| ticket.latest_assignment_mut()).flatten();
+        let Some(assignment) = current.filter(|assignment| {
+            assignment.status == crate::core::model::AssignmentStatus::Running
+                && payload.assignment_id.as_deref() == Some(assignment.id.as_str())
+        }) else {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "ok": false, "error": "Report does not match the running assignment" })),
+            );
+        };
+        if payload.status != ReportStatus::Progress {
+            assignment.pending_report = Some(crate::core::model::AssignmentReport {
+                status: payload.status,
+                summary: payload.summary,
+                question: payload.question,
+                pull_request_url: payload.pull_request_url,
+                at: now.clone(),
+            });
+            let _ = app.store.save_engine_state(&eng.state, &now);
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({ "ok": true, "pending_verification": true })),
+            );
+        }
+    }
     match eng.record_worker_report(
         &payload.ticket_id,
         payload.status,

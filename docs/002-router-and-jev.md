@@ -43,6 +43,7 @@
 #### 基于概率阈值的分流规则
 - **静默过滤**：当 `route_action == "ignore"` 且置信度 `>= 0.75`，且所有主动规则匹配概率 `< 0.30` 时，直接记录 `Decision(ignore)`，不唤醒生成式 Router。
 - **高置信度快路径派单（Fast-Accept）**：当请求强度为 `explicit`（或处于 `auto` 模式且主动规则匹配概率 `>= 0.85`），且 `route_action` 为 `new_ticket` / `attach_ticket`（置信度 `>= 0.80`）时，直接根据 `(task_kind, complexity)` 映射表生成 `ExecutionTarget` 并派单。
+- **飞书群免唤醒词**：对配置群中白名单用户未点名的消息，额外判断 `feishu_task_request`。只有在 `auto` 模式、明确任务概率 `>= 0.90`、注入风险 `< 0.80`，并且 `new_ticket` 的置信度 `>= 0.80` 时，才通过这条路径新建工单。只 @ 其他人的消息不走此路径；没有匹配主动规则的模糊消息不唤醒二级 Router。
 - **升级至 System-2（Escalation）**：当置信度不足、命中 `needs_llm_router`、处于需生成确认文案的交互场景，或涉及跨多个工单的冲突协调时，将 `Jev` 的输出概率作为先验标签（Prior Hints）一并送入常驻生成式 Router。
 
 ---

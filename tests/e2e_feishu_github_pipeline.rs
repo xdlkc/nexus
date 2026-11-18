@@ -1,16 +1,19 @@
-use nexus::adapters::feishu::{parse_feishu_chat_members_json, parse_feishu_messages_json};
+use nexus::adapters::feishu::{
+    IMPLICIT_TASK_ELIGIBLE, MENTIONS_OTHERS, parse_feishu_chat_members_json,
+    parse_feishu_messages_json,
+};
 use nexus::adapters::github::{
     parse_github_issue_comments_json, parse_github_pr_state_json, parse_github_review_comments_json,
 };
 use nexus::config::NexusConfig;
 use nexus::core::engine::Engine;
-use nexus::core::model::{HarnessKind, ThinkEffort, TicketStage};
+use nexus::core::model::{AcceptMode, HarnessKind, ThinkEffort, TicketStage};
 use nexus::infra::store::SqliteStore;
 use nexus::router::jev_http::HeuristicJevClassifier;
 use nexus::router::llm::{
     LlmClient, LlmCompletionRequest, LlmCompletionResponse, LlmToolCall,
 };
-use nexus::runtime::NexusRuntime;
+use nexus::runtime::{NexusRuntime, RuntimeTickSummary};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -99,6 +102,37 @@ fn feishu_and_github_json_parsers_extract_threads_directives_and_mentions() {
         })),
         Some("merged".to_owned())
     );
+}
+
+#[test]
+fn github_automation_status_does_not_reopen_human_work() {
+    let cfg = NexusConfig::default_with_state_dir("/tmp/nexus-test".into());
+    let comments = serde_json::json!([
+        {
+            "id": 31, "updated_at": "2026-11-18T04:02:47Z",
+            "user": {"login": "alice", "type": "User"},
+            "issue_url": "https://api.github.com/repos/acme/nexus/issues/8",
+            "body": "<!-- shuttle:7 -->\nShuttle · `pi` · 任务 #7\n\n已开始处理。"
+        },
+        {
+            "id": 32, "updated_at": "2026-11-18T04:02:48Z",
+            "user": {"login": "alice", "type": "User"},
+            "issue_url": "https://api.github.com/repos/acme/nexus/issues/8",
+            "body": "请检查 <!-- shuttle:7 --> 对应的任务有没有提交 PR"
+        },
+        {
+            "id": 33, "updated_at": "2026-11-18T04:02:49Z",
+            "user": {"login": "alice", "type": "User"},
+            "issue_url": "https://api.github.com/repos/acme/nexus/issues/8",
+            "body": "<!-- shuttle:7 -->\nShuttle · 任务已结束。"
+        }
+    ]);
+    let (triggers, cursor) =
+        parse_github_issue_comments_json(&cfg.github, "acme/nexus", &comments, None);
+    assert_eq!(triggers.len(), 1);
+    assert_eq!(triggers[0].id, "gh-ic-32");
+    assert!(triggers[0].addressed_agent);
+    assert_eq!(cursor.as_deref(), Some("2026-11-18T04:02:49Z"));
 }
 
 #[tokio::test]
@@ -224,6 +258,84 @@ async fn end_to_end_feishu_lark_cli_and_github_gh_closed_loop() {
     }
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn feishu_rest_preserves_mentions_to_other_people() {
+    let cfg = NexusConfig::default_with_state_dir("/tmp/nexus-test".into());
+    let event = serde_json::json!({"data": {"items": [{
+        "message_id": "om_mention",
+        "create_time": "1730592000000",
+        "sender": {"id": "ou_alice"},
+        "mentions": [{"id": "ou_bob", "name": "Bob", "key": "@_user_1"}],
+        "body": {"content": "{\"text\":\"@_user_1 帮我补个回归测试\"}"}
+    }]}});
+    let (triggers, _) = parse_feishu_messages_json(&cfg.feishu, "oc_chat_dev", &event, None);
+    assert!(!triggers[0].addressed_agent);
+    assert_eq!(triggers[0].meta[MENTIONS_OTHERS], true);
+}
+
+#[tokio::test]
+async fn feishu_poll_only_marks_allowlisted_members_of_configured_groups() {
+    let tmp_dir = std::env::temp_dir().join(format!("nexus-feishu-scope-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let mock_lark_bin = tmp_dir.join("mock-lark-cli");
+    write_executable_script(
+        &mock_lark_bin,
+        r#"#!/bin/sh
+if [ "$1" != event ]; then exit 1; fi
+cat <<'EVENTS'
+{"message_id":"om_allowed","chat_id":"oc_dev","chat_type":"group","create_time":"1730592000001","sender_id":"ou_alice","content":"帮我补个回归测试"}
+{"message_id":"om_other_group","chat_id":"oc_other","chat_type":"group","create_time":"1730592000002","sender_id":"ou_alice","content":"帮我补个回归测试"}
+{"message_id":"om_unlisted","chat_id":"oc_dev","chat_type":"group","create_time":"1730592000003","sender_id":"ou_bob","content":"帮我补个回归测试"}
+{"message_id":"om_mention","chat_id":"oc_dev","chat_type":"group","create_time":"1730592000004","sender_id":"ou_alice","content":"@_user_1 帮我补个回归测试","mentions":[{"id":"ou_bob","name":"Bob","key":"@_user_1"}]}
+{"message_id":"om_dm","chat_id":"oc_private","chat_type":"p2p","create_time":"1730592000005","sender_id":"ou_alice","content":"帮我补个回归测试"}
+EVENTS
+"#,
+    );
+    let mut cfg = NexusConfig::default_with_state_dir(tmp_dir.clone());
+    cfg.feishu.lark_bin = mock_lark_bin;
+    cfg.feishu.chat_ids = vec!["oc_dev".to_owned()];
+    cfg.allowed_actors.insert("ou_alice".to_owned());
+    let store = Arc::new(SqliteStore::open(&tmp_dir.join("nexus.db")).unwrap());
+    let mut engine = Engine::new(cfg.worktree_root.to_string_lossy());
+    engine.state.accept_mode = Some(AcceptMode::Auto);
+    let engine = Arc::new(Mutex::new(engine));
+    struct UnusedLlm;
+    impl LlmClient for UnusedLlm {
+        async fn complete(&self, _: &LlmCompletionRequest) -> anyhow::Result<LlmCompletionResponse> {
+            panic!("Polling should never invoke the LLM")
+        }
+    }
+    let mut runtime = NexusRuntime::new(
+        Arc::clone(&engine),
+        store,
+        Arc::new(Mutex::new(cfg)),
+        HeuristicJevClassifier,
+        UnusedLlm,
+    )
+    .unwrap();
+    runtime
+        .poll_sources(&mut RuntimeTickSummary::default(), "2026-11-03T04:00:00Z")
+        .await
+        .unwrap();
+    {
+        let guard = engine.lock().unwrap();
+        let triggers = &guard.state.triggers;
+        let allowed = &triggers["feishu-msg-om_allowed"];
+        assert!(!allowed.addressed_agent);
+        assert_eq!(allowed.meta[IMPLICIT_TASK_ELIGIBLE], true);
+        assert!(
+            !triggers["feishu-msg-om_other_group"]
+                .meta
+                .contains_key(IMPLICIT_TASK_ELIGIBLE)
+        );
+        assert!(!triggers.contains_key("feishu-msg-om_unlisted"));
+        assert_eq!(triggers["feishu-msg-om_mention"].meta[MENTIONS_OTHERS], true);
+        assert!(triggers["feishu-msg-om_dm"].addressed_agent);
+    }
+    drop(runtime);
+    std::fs::remove_dir_all(tmp_dir).unwrap();
 }
 
 #[test]

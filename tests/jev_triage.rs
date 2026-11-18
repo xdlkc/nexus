@@ -1,3 +1,4 @@
+use nexus::adapters::feishu::{IMPLICIT_TASK_ELIGIBLE, MENTIONS_OTHERS};
 use nexus::core::gate::{
     SourceAdmissionPolicy, evaluate_gate_strength, parse_inline_target_directive,
 };
@@ -7,8 +8,9 @@ use nexus::core::model::{
 };
 use nexus::router::jev::{
     ClassifierAnswer, ClassifierContext, ClassifierResult, JevClassifier, JevTriageInput,
-    JevTriageOutcome, run_jev_triage,
+    JevTriageOutcome, build_jev_triage_context, run_jev_triage,
 };
+use nexus::router::jev_http::HeuristicJevClassifier;
 use std::collections::{BTreeMap, HashSet};
 
 struct MockJev {
@@ -221,6 +223,131 @@ async fn fast_dispatches_explicit_hard_debug_to_codex_xhigh() {
             confidence: 0.88,
         }
     );
+}
+
+#[tokio::test]
+async fn routes_clear_feishu_requests_without_wake_words_in_auto_mode() {
+    let mut trigger = make_trigger("帮我给登录模块补一个回归测试", false);
+    trigger
+        .meta
+        .insert(IMPLICIT_TASK_ELIGIBLE.to_owned(), true.into());
+    let mock = MockJev {
+        result: ClassifierResult {
+            model: "jev-latest".to_owned(),
+            answers: BTreeMap::from([
+                (
+                    "injection_risk".to_owned(),
+                    ClassifierAnswer::Bool { probability: 0.01 },
+                ),
+                (
+                    "feishu_task_request".to_owned(),
+                    ClassifierAnswer::Bool { probability: 0.97 },
+                ),
+                (
+                    "route_action".to_owned(),
+                    ClassifierAnswer::Choice {
+                        choice: "new_ticket".to_owned(),
+                        probabilities: BTreeMap::new(),
+                        confidence: 0.95,
+                    },
+                ),
+            ]),
+        },
+    };
+    let input = JevTriageInput {
+        triggers: std::slice::from_ref(&trigger),
+        strength: AdmissionStrength::Inferred,
+        accept_mode: AcceptMode::Auto,
+        thread_messages: &[],
+        open_tickets: &[],
+        rules: &[],
+    };
+    assert!(
+        build_jev_triage_context(&input)
+            .questions
+            .contains_key("feishu_task_request")
+    );
+    assert!(matches!(
+        run_jev_triage(&mock, &input).await,
+        JevTriageOutcome::FastDispatch {
+            action: RouteAction::NewTicket,
+            matched_rule_ids,
+            ..
+        } if matched_rule_ids.is_empty()
+    ));
+    assert!(matches!(
+        run_jev_triage(&HeuristicJevClassifier, &input).await,
+        JevTriageOutcome::Ignore { .. }
+    ));
+}
+
+#[tokio::test]
+async fn keeps_unmentioned_feishu_noise_and_uncertain_requests_quiet() {
+    let rules = sample_rules();
+    for (eligible, mentions_others, mode, action, confidence, request, matched_rule) in [
+        (true, false, AcceptMode::Auto, "new_ticket", 0.95, 0.30, 0.05),
+        (true, false, AcceptMode::Auto, "new_ticket", 0.60, 0.98, 0.05),
+        (true, false, AcceptMode::Auto, "stop_ticket", 0.99, 0.98, 0.05),
+        (false, false, AcceptMode::Auto, "new_ticket", 0.95, 0.98, 0.05),
+        (true, true, AcceptMode::Auto, "new_ticket", 0.95, 0.98, 0.95),
+        (true, false, AcceptMode::Observe, "new_ticket", 0.95, 0.98, 0.05),
+        (true, false, AcceptMode::Off, "new_ticket", 0.95, 0.98, 0.05),
+    ] {
+        let mut trigger = make_trigger("帮我给登录模块补一个回归测试", false);
+        trigger
+            .meta
+            .insert(IMPLICIT_TASK_ELIGIBLE.to_owned(), eligible.into());
+        trigger
+            .meta
+            .insert(MENTIONS_OTHERS.to_owned(), mentions_others.into());
+        let mock = MockJev {
+            result: ClassifierResult {
+                model: "jev-latest".to_owned(),
+                answers: BTreeMap::from([
+                    (
+                        "injection_risk".to_owned(),
+                        ClassifierAnswer::Bool { probability: 0.01 },
+                    ),
+                    (
+                        "feishu_task_request".to_owned(),
+                        ClassifierAnswer::Bool {
+                            probability: request,
+                        },
+                    ),
+                    (
+                        "rule_silent_bugfix".to_owned(),
+                        ClassifierAnswer::Bool {
+                            probability: matched_rule,
+                        },
+                    ),
+                    (
+                        "route_action".to_owned(),
+                        ClassifierAnswer::Choice {
+                            choice: action.to_owned(),
+                            probabilities: BTreeMap::new(),
+                            confidence,
+                        },
+                    ),
+                ]),
+            },
+        };
+        let outcome = run_jev_triage(
+            &mock,
+            &JevTriageInput {
+                triggers: std::slice::from_ref(&trigger),
+                strength: AdmissionStrength::Inferred,
+                accept_mode: mode,
+                thread_messages: &[],
+                open_tickets: &[],
+                rules: &rules,
+            },
+        )
+        .await;
+        assert!(
+            matches!(outcome, JevTriageOutcome::Ignore { .. }),
+            "{outcome:?}"
+        );
+    }
 }
 
 #[tokio::test]
